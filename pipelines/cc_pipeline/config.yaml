@@ -1,0 +1,27 @@
+paths:
+    output_directory: "/scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/"
+    fastq_paths: "fastq_paths.txt"
+    ref_genome_dir: "/nfs/turbo/umms-indikar/shared/projects/reference_genome/prebuilt/refdata-gex-GRCh38-2024-A"
+    nextflow: "/nfs/turbo/umms-indikar/Ram/tools"
+
+nextflow:
+    process_name: "cc_fib_epi2me_nextflow"    
+    sample_name: "cc_fib"    
+    nextflow_config: "./nextflow.config"
+
+pipeline: 
+    expected_cells: 10000
+    kit: "3prime:v4"
+    full_length_only: true
+    threads: 32
+    fastq_chunk: 1000000
+    barcode_adapter1_suff_length: 10
+    barcode_min_quality: 15
+    barcode_max_ed: 2
+    barcode_min_ed_diff: 2
+    gene_assigns_minqv: 30
+    matrix_min_genes: 5
+    matrix_min_cells: 3
+    matrix_max_mito: 20
+    matrix_norm_count: 10000
+  

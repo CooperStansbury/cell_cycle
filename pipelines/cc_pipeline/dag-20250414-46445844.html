@@ -1,0 +1,188 @@
+<!--
+  ~ Copyright 2013-2024, Seqera Labs
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+  -->
+<html>
+<head>
+<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1, maximum-scale=1">
+</head>
+<body>
+<pre class="mermaid" style="text-align: center;">
+flowchart TB
+    subgraph " "
+    v0["Channel.fromPath"]
+    v5["fcargs"]
+    v6["src"]
+    v19["sc_sample_sheet"]
+    v20["kit_config"]
+    v31["ref_genes.gtf"]
+    v33["reference.fa"]
+    v35["bc_longlist_dir"]
+    v41["ref.gtf"]
+    v52["output_fname"]
+    v62["ref_genome.fa"]
+    v63["ref_genome.fa.fai"]
+    v118["genes_of_interest.tsv"]
+    v127["umap_genes"]
+    v128["wf_version"]
+    v129["visium_coords"]
+    end
+    v7([fastcat])
+    v21([parse_kit_metadata])
+    subgraph pipeline
+    v28([getVersions])
+    v29([getParams])
+    subgraph preprocess
+    v32([call_paftools])
+    v34([build_minimap_index])
+    v36([call_adapter_scan])
+    v38([summarize_adapter_table])
+    v37(( ))
+    v40(( ))
+    v59(( ))
+    end
+    subgraph process_bams
+    v42([split_gtf_by_chroms])
+    v45([generate_whitelist])
+    v48([assign_barcodes])
+    v53([merge_and_publish_tsv])
+    v56([cat_tags_by_chrom])
+    v60([merge_bams])
+    v64([stringtie])
+    v65([align_to_transcriptome])
+    v67([assign_features])
+    v69([create_matrix])
+    v74([process_matrix])
+    v80([merge_transcriptome])
+    v84([combine_final_tag_files])
+    v86([tag_bam])
+    v87([umi_gene_saturation])
+    v90([pack_images])
+    v43(( ))
+    v46(( ))
+    v50(( ))
+    v55(( ))
+    v57(( ))
+    v70(( ))
+    v76(( ))
+    v82(( ))
+    v88(( ))
+    v91(( ))
+    end
+    v119([prepare_report_data])
+    v130([makeReport])
+    v93(( ))
+    v124(( ))
+    v125(( ))
+    v126(( ))
+    end
+    subgraph " "
+    v39[" "]
+    v49[" "]
+    v54[" "]
+    v75[" "]
+    v81[" "]
+    v131[" "]
+    end
+    v1(( ))
+    v0 --> v1
+    v5 --> v7
+    v6 --> v7
+    v1 --> v7
+    v7 --> v1
+    v19 --> v21
+    v20 --> v21
+    v1 --> v21
+    v21 --> v1
+    v28 --> v130
+    v29 --> v130
+    v31 --> v32
+    v32 --> v36
+    v33 --> v34
+    v34 --> v36
+    v35 --> v36
+    v1 --> v36
+    v36 --> v37
+    v36 --> v40
+    v36 --> v46
+    v36 --> v59
+    v36 --> v93
+    v37 --> v38
+    v38 --> v39
+    v41 --> v42
+    v42 --> v43
+    v40 --> v45
+    v45 --> v46
+    v45 --> v50
+    v45 --> v88
+    v45 --> v93
+    v46 --> v48
+    v48 --> v49
+    v48 --> v50
+    v48 --> v55
+    v52 --> v53
+    v50 --> v53
+    v53 --> v54
+    v55 --> v56
+    v56 --> v57
+    v59 --> v60
+    v60 --> v43
+    v60 --> v82
+    v62 --> v64
+    v63 --> v64
+    v43 --> v64
+    v64 --> v65
+    v64 --> v76
+    v65 --> v57
+    v57 --> v67
+    v67 --> v57
+    v67 --> v76
+    v57 --> v69
+    v69 --> v70
+    v69 --> v82
+    v69 --> v93
+    v70 --> v74
+    v74 --> v75
+    v74 --> v93
+    v76 --> v80
+    v80 --> v81
+    v82 --> v84
+    v84 --> v87
+    v82 --> v86
+    v86 --> v93
+    v87 --> v88
+    v88 --> v90
+    v90 --> v91
+    v118 --> v119
+    v93 --> v119
+    v119 --> v124
+    v119 --> v125
+    v119 --> v126
+    v127 --> v130
+    v128 --> v130
+    v129 --> v130
+    v1 --> v130
+    v91 --> v130
+    v124 --> v130
+    v125 --> v130
+    v126 --> v130
+    v130 --> v131
+
+</pre>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, maxTextSize: Number.MAX_SAFE_INTEGER, maxEdges: Number.MAX_SAFE_INTEGER });
+</script>
+</body>
+</html>

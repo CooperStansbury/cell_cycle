@@ -1,0 +1,1186 @@
+2025-04-14 12:54:02,696 [INFO] Config file path: ./config.yaml
+2025-04-14 12:54:02,696 [INFO] Force overwrite: True
+2025-04-14 12:54:03,471 [INFO] Nextflow is available.
+2025-04-14 12:54:03,473 [INFO] Configuration for: paths
+2025-04-14 12:54:03,473 [INFO] 	 output_directory : /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/
+2025-04-14 12:54:03,473 [INFO] 	 fastq_paths : fastq_paths.txt
+2025-04-14 12:54:03,473 [INFO] 	 ref_genome_dir : /nfs/turbo/umms-indikar/shared/projects/reference_genome/prebuilt/refdata-gex-GRCh38-2024-A
+2025-04-14 12:54:03,473 [INFO] 	 nextflow : /nfs/turbo/umms-indikar/Ram/tools
+2025-04-14 12:54:03,473 [INFO] Configuration for: nextflow
+2025-04-14 12:54:03,473 [INFO] 	 process_name : cc_fib_epi2me_nextflow
+2025-04-14 12:54:03,473 [INFO] 	 sample_name : cc_fib
+2025-04-14 12:54:03,473 [INFO] 	 nextflow_config : ./nextflow.config
+2025-04-14 12:54:03,473 [INFO] Configuration for: pipeline
+2025-04-14 12:54:03,473 [INFO] 	 expected_cells : 10000
+2025-04-14 12:54:03,473 [INFO] 	 kit : 3prime:v4
+2025-04-14 12:54:03,474 [INFO] 	 full_length_only : True
+2025-04-14 12:54:03,474 [INFO] 	 threads : 32
+2025-04-14 12:54:03,474 [INFO] 	 fastq_chunk : 1000000
+2025-04-14 12:54:03,474 [INFO] 	 barcode_adapter1_suff_length : 10
+2025-04-14 12:54:03,474 [INFO] 	 barcode_min_quality : 15
+2025-04-14 12:54:03,474 [INFO] 	 barcode_max_ed : 2
+2025-04-14 12:54:03,474 [INFO] 	 barcode_min_ed_diff : 2
+2025-04-14 12:54:03,474 [INFO] 	 gene_assigns_minqv : 30
+2025-04-14 12:54:03,474 [INFO] 	 matrix_min_genes : 5
+2025-04-14 12:54:03,474 [INFO] 	 matrix_min_cells : 3
+2025-04-14 12:54:03,474 [INFO] 	 matrix_max_mito : 20
+2025-04-14 12:54:03,474 [INFO] 	 matrix_norm_count : 10000
+2025-04-14 12:54:03,479 [INFO] Created output directory: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/
+2025-04-14 12:54:03,479 [INFO] Created working directory: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/
+2025-04-14 12:54:03,481 [INFO] Running pipeline for 21 FASTQs from: fastq_paths.txt
+2025-04-14 12:54:03,481 [INFO] Compiling inputs to: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq
+2025-04-14 12:54:03,484 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run6d.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run6d.fastq.gz
+2025-04-14 12:54:03,484 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run5.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run5.fastq.gz
+2025-04-14 12:54:03,485 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run4.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run4.fastq.gz
+2025-04-14 12:54:03,486 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run7a.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run7a.fastq.gz
+2025-04-14 12:54:03,487 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run3a.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run3a.fastq.gz
+2025-04-14 12:54:03,487 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run6b.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run6b.fastq.gz
+2025-04-14 12:54:03,488 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/run1.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/run1.fastq.gz
+2025-04-14 12:54:03,489 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run2a.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run2a.fastq.gz
+2025-04-14 12:54:03,490 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run4a.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run4a.fastq.gz
+2025-04-14 12:54:03,490 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run5a.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run5a.fastq.gz
+2025-04-14 12:54:03,491 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run7b.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run7b.fastq.gz
+2025-04-14 12:54:03,492 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run4c.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run4c.fastq.gz
+2025-04-14 12:54:03,492 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run4d.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run4d.fastq.gz
+2025-04-14 12:54:03,493 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run6c.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run6c.fastq.gz
+2025-04-14 12:54:03,494 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run4b.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run4b.fastq.gz
+2025-04-14 12:54:03,494 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run2.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run2.fastq.gz
+2025-04-14 12:54:03,495 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run6a.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run6a.fastq.gz
+2025-04-14 12:54:03,496 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run6.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run6.fastq.gz
+2025-04-14 12:54:03,496 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run5c.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run5c.fastq.gz
+2025-04-14 12:54:03,497 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run5b.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run5b.fastq.gz
+2025-04-14 12:54:03,498 [INFO] 	Created symlink: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq/scfib/Run3.fastq.gz -> /nfs/turbo/umms-indikar/shared/projects/cell_cycle/data/sc_cell_cycle_2024/transcripts/merged/Run3.fastq.gz
+2025-04-14 12:54:03,498 [INFO]  ---------- Prepared Nextflow command: 
+2025-04-14 12:54:03,498 [INFO] nextflow run epi2me-labs/wf-single-cell --fastq /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq --ref_genome_dir /nfs/turbo/umms-indikar/shared/projects/reference_genome/prebuilt/refdata-gex-GRCh38-2024-A --out_dir /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/ --sample cc_fib -work-dir /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ -c ./nextflow.config -resume -name cc_fib_epi2me_nextflow -ansi-log false -with-report -with-dag -with-timeline -with-trace -profile singularity --expected_cells 10000  --kit 3prime:v4  --full_length_only True  --threads 32  --fastq_chunk 1000000  --barcode_adapter1_suff_length 10  --barcode_min_quality 15  --barcode_max_ed 2  --barcode_min_ed_diff 2  --gene_assigns_minqv 30  --matrix_min_genes 5  --matrix_min_cells 3  --matrix_max_mito 20  --matrix_norm_count 10000
+[33mNextflow 24.10.5 is available - Please consider updating your version to it(B[m
+N E X T F L O W  ~  version 24.10.4
+WARN: It appears you have never run this project before -- Option `-resume` is ignored
+Launching `https://github.com/epi2me-labs/wf-single-cell` [cc_fib_epi2me_nextflow] DSL2 - revision: eaceb66db1 [master]
+
+[0;92m||||||||||   [0m[2m_____ ____ ___ ____  __  __ _____      _       _
+[0;92m||||||||||  [0m[2m| ____|  _ \_ _|___ \|  \/  | ____|    | | __ _| |__  ___
+[0;33m|||||       [0m[2m|  _| | |_) | |  __) | |\/| |  _| _____| |/ _` | '_ \/ __|
+[0;33m|||||       [0m[2m| |___|  __/| | / __/| |  | | |__|_____| | (_| | |_) \__ \
+[0;94m||||||||||  [0m[2m|_____|_|  |___|_____|_|  |_|_____|    |_|\__,_|_.__/|___/
+[0;94m||||||||||  [0m[1mwf-single-cell v3.0.1-geaceb66[0m
+[2m--------------------------------------------------------------------------------[0m
+[1mCore Nextflow options[0m
+[0;34mrevision        : [0;32mmaster[0m
+[0;34mrunName         : [0;32mcc_fib_epi2me_nextflow[0m
+[0;34mcontainerEngine : [0;32msingularity[0m
+[0;34mcontainer       : [0;32m[withLabel:singlecell:ontresearch/wf-single-cell:shab5b0dea0efc4685f74c8b4f91c979c587e23a020, withLabel:wf_common:ontresearch/wf-common:shaabceef445fb63214073cbf5836fdd33c04be4ac7][0m
+[0;34mlaunchDir       : [0;32m/home/cstansbu/git_repositories/hematokytos/cc_pipeline[0m
+[0;34mworkDir         : [0;32m/scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work[0m
+[0;34mprojectDir      : [0;32m/home/cstansbu/.nextflow/assets/epi2me-labs/wf-single-cell[0m
+[0;34muserName        : [0;32mcstansbu[0m
+[0;34mprofile         : [0;32msingularity[0m
+[0;34mconfigFiles     : [0;32m/home/cstansbu/.nextflow/assets/epi2me-labs/wf-single-cell/nextflow.config, /home/cstansbu/git_repositories/hematokytos/cc_pipeline/nextflow.config, /home/cstansbu/git_repositories/hematokytos/cc_pipeline/./nextflow.config[0m
+
+[1mInput Options[0m
+[0;34mfastq           : [0;32m/scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/fastq[0m
+[0;34mref_genome_dir  : [0;32m/nfs/turbo/umms-indikar/shared/projects/reference_genome/prebuilt/refdata-gex-GRCh38-2024-A[0m
+[0;34mkit             : [0;32m3prime:v4[0m
+[0;34mexpected_cells  : [0;32m10000[0m
+
+[1mSample Options[0m
+[0;34msample          : [0;32mcc_fib[0m
+
+[1mOutput Options[0m
+[0;34mout_dir         : [0;32m/scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/[0m
+
+[1mAdvanced options[0m
+[0;34mthreads         : [0;32m32[0m
+[0;34mmatrix_min_genes: [0;32m5[0m
+
+!! Only displaying parameters that differ from the pipeline defaults !!
+[2m--------------------------------------------------------------------------------[0m
+If you use epi2me-labs/wf-single-cell for your analysis please cite:
+
+* The nf-core framework
+https://doi.org/10.1038/s41587-020-0439-x
+
+
+[2m--------------------------------------------------------------------------------[0m
+This is epi2me-labs/wf-single-cell v3.0.1-geaceb66.
+[2m--------------------------------------------------------------------------------[0m
+Searching input for [.fastq, .fastq.gz, .fq, .fq.gz] files.
+WARN: Singularity cache directory has not been defined -- Remote image will be stored in the path: /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/singularity -- Use the environment variable NXF_SINGULARITY_CACHEDIR to specify a different location
+Pulling Singularity image docker://ontresearch/wf-single-cell:shab5b0dea0efc4685f74c8b4f91c979c587e23a020 [cache /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/singularity/ontresearch-wf-single-cell-shab5b0dea0efc4685f74c8b4f91c979c587e23a020.img]
+Pulling Singularity image docker://ontresearch/wf-common:shaabceef445fb63214073cbf5836fdd33c04be4ac7 [cache /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/singularity/ontresearch-wf-common-shaabceef445fb63214073cbf5836fdd33c04be4ac7.img]
+[e1/c4e628] Submitted process > fastcat (1)
+[cf/0c8dcd] Submitted process > pipeline:process_bams:split_gtf_by_chroms
+[55/537c13] Submitted process > pipeline:getParams
+[9b/7d37e1] Submitted process > pipeline:preprocess:call_paftools
+[6e/0a989f] Submitted process > pipeline:getVersions
+[b7/783350] Submitted process > pipeline:preprocess:build_minimap_index
+[bf/cc3672] Submitted process > parse_kit_metadata (1)
+[7b/b3cd17] Submitted process > pipeline:preprocess:call_adapter_scan (2)
+[79/cafe78] Submitted process > pipeline:preprocess:call_adapter_scan (15)
+[e7/4be65f] Submitted process > pipeline:preprocess:call_adapter_scan (14)
+[49/555ca9] Submitted process > pipeline:preprocess:call_adapter_scan (4)
+[a0/1ed8ae] Submitted process > pipeline:preprocess:call_adapter_scan (16)
+[69/27f271] Submitted process > pipeline:preprocess:call_adapter_scan (28)
+[33/529748] Submitted process > pipeline:preprocess:call_adapter_scan (3)
+[59/af1a4f] Submitted process > pipeline:preprocess:call_adapter_scan (5)
+[82/5f4449] Submitted process > pipeline:preprocess:call_adapter_scan (8)
+[59/b07632] Submitted process > pipeline:preprocess:call_adapter_scan (22)
+[07/607a5d] Submitted process > pipeline:preprocess:call_adapter_scan (11)
+[aa/ae36a1] Submitted process > pipeline:preprocess:call_adapter_scan (17)
+[41/e1a919] Submitted process > pipeline:preprocess:call_adapter_scan (30)
+[86/c1e606] Submitted process > pipeline:preprocess:call_adapter_scan (27)
+[71/4e1132] Submitted process > pipeline:preprocess:call_adapter_scan (25)
+[b0/b05522] Submitted process > pipeline:preprocess:call_adapter_scan (32)
+[77/79eea3] Submitted process > pipeline:preprocess:call_adapter_scan (29)
+[58/e32138] Submitted process > pipeline:preprocess:call_adapter_scan (9)
+[85/a60af4] Submitted process > pipeline:preprocess:call_adapter_scan (10)
+[d9/e3b649] Submitted process > pipeline:preprocess:call_adapter_scan (20)
+[38/ad7e51] Submitted process > pipeline:preprocess:call_adapter_scan (18)
+[3d/141dac] Submitted process > pipeline:preprocess:call_adapter_scan (13)
+[b0/92129a] Submitted process > pipeline:preprocess:call_adapter_scan (23)
+[78/8e11b7] Submitted process > pipeline:preprocess:call_adapter_scan (1)
+[ff/75d094] Submitted process > pipeline:preprocess:call_adapter_scan (31)
+[bb/a2f16f] Submitted process > pipeline:preprocess:call_adapter_scan (7)
+[5b/06cf37] Submitted process > pipeline:preprocess:call_adapter_scan (26)
+[88/cea12a] Submitted process > pipeline:preprocess:call_adapter_scan (19)
+[a7/aa5ed1] Submitted process > pipeline:preprocess:call_adapter_scan (6)
+[6d/999753] Submitted process > pipeline:preprocess:call_adapter_scan (24)
+[2a/933e96] Submitted process > pipeline:preprocess:call_adapter_scan (12)
+[46/913a7f] Submitted process > pipeline:preprocess:call_adapter_scan (33)
+[c9/3836de] Submitted process > pipeline:preprocess:call_adapter_scan (21)
+[43/744d66] Submitted process > pipeline:preprocess:call_adapter_scan (36)
+[a2/eaba10] Submitted process > pipeline:preprocess:call_adapter_scan (38)
+[d6/95149d] Submitted process > pipeline:preprocess:call_adapter_scan (34)
+[16/76afd1] Submitted process > pipeline:preprocess:call_adapter_scan (39)
+[9c/128013] Submitted process > pipeline:preprocess:call_adapter_scan (35)
+[26/7300ee] Submitted process > pipeline:preprocess:call_adapter_scan (40)
+[9f/ae4505] Submitted process > pipeline:preprocess:call_adapter_scan (37)
+[a2/360047] Submitted process > pipeline:preprocess:call_adapter_scan (42)
+[2a/62f6ca] Submitted process > pipeline:preprocess:call_adapter_scan (43)
+[e2/d9bb2e] Submitted process > pipeline:preprocess:call_adapter_scan (41)
+[cc/9b2b2c] Submitted process > pipeline:preprocess:call_adapter_scan (44)
+[15/8dc83e] Submitted process > pipeline:preprocess:call_adapter_scan (45)
+[32/d26977] Submitted process > pipeline:preprocess:call_adapter_scan (70)
+[02/d3eacf] Submitted process > pipeline:preprocess:call_adapter_scan (46)
+[d0/1551f5] Submitted process > pipeline:preprocess:call_adapter_scan (47)
+[8b/b3416d] Submitted process > pipeline:preprocess:call_adapter_scan (48)
+[73/4b6319] Submitted process > pipeline:preprocess:call_adapter_scan (50)
+[99/4d83fb] Submitted process > pipeline:preprocess:call_adapter_scan (51)
+[e2/989d7d] Submitted process > pipeline:preprocess:call_adapter_scan (49)
+[b5/4874ba] Submitted process > pipeline:preprocess:call_adapter_scan (54)
+[d3/2237d8] Submitted process > pipeline:preprocess:call_adapter_scan (52)
+[e2/2248a0] Submitted process > pipeline:preprocess:call_adapter_scan (53)
+[84/362a8f] Submitted process > pipeline:preprocess:call_adapter_scan (57)
+[21/9f688f] Submitted process > pipeline:preprocess:call_adapter_scan (55)
+[d0/a4b317] Submitted process > pipeline:preprocess:call_adapter_scan (56)
+[df/26b5da] Submitted process > pipeline:preprocess:call_adapter_scan (58)
+[bc/239140] Submitted process > pipeline:preprocess:call_adapter_scan (60)
+[1f/be5bb4] Submitted process > pipeline:preprocess:call_adapter_scan (59)
+[38/ef93ea] Submitted process > pipeline:preprocess:call_adapter_scan (61)
+[6c/d0bed1] Submitted process > pipeline:preprocess:call_adapter_scan (62)
+[6a/9c98cd] Submitted process > pipeline:preprocess:call_adapter_scan (63)
+[e0/eae814] Submitted process > pipeline:preprocess:call_adapter_scan (64)
+[a3/235e2a] Submitted process > pipeline:preprocess:call_adapter_scan (65)
+[8b/6549ab] Submitted process > pipeline:preprocess:call_adapter_scan (66)
+[65/80d1d5] Submitted process > pipeline:preprocess:call_adapter_scan (67)
+[14/645ba7] Submitted process > pipeline:preprocess:call_adapter_scan (68)
+[dc/9dfe03] Submitted process > pipeline:preprocess:call_adapter_scan (69)
+[aa/6b3a03] Submitted process > pipeline:preprocess:call_adapter_scan (71)
+[b3/150ab3] Submitted process > pipeline:preprocess:call_adapter_scan (74)
+[20/c57927] Submitted process > pipeline:preprocess:call_adapter_scan (73)
+[c9/9dda76] Submitted process > pipeline:preprocess:call_adapter_scan (75)
+[78/d8804f] Submitted process > pipeline:preprocess:call_adapter_scan (76)
+[76/230560] Submitted process > pipeline:preprocess:call_adapter_scan (72)
+[51/8f07e1] Submitted process > pipeline:preprocess:call_adapter_scan (77)
+[46/41913e] Submitted process > pipeline:preprocess:call_adapter_scan (78)
+[24/037e02] Submitted process > pipeline:preprocess:call_adapter_scan (79)
+[c3/5c1b75] Submitted process > pipeline:preprocess:call_adapter_scan (80)
+[db/11d841] Submitted process > pipeline:preprocess:call_adapter_scan (81)
+[60/04eef0] Submitted process > pipeline:preprocess:call_adapter_scan (83)
+[c3/fb2df6] Submitted process > pipeline:preprocess:call_adapter_scan (82)
+[31/427b92] Submitted process > pipeline:preprocess:call_adapter_scan (85)
+[c3/5e7031] Submitted process > pipeline:preprocess:call_adapter_scan (84)
+[ee/bcff42] Submitted process > pipeline:preprocess:call_adapter_scan (86)
+[06/e10af2] Submitted process > pipeline:preprocess:call_adapter_scan (88)
+[33/23f84f] Submitted process > pipeline:preprocess:call_adapter_scan (87)
+[a0/c56219] Submitted process > pipeline:preprocess:call_adapter_scan (89)
+[32/dc4d31] Submitted process > pipeline:preprocess:call_adapter_scan (91)
+[0c/73de8c] Submitted process > pipeline:preprocess:call_adapter_scan (90)
+[e5/4c3f00] Submitted process > pipeline:preprocess:call_adapter_scan (92)
+[dc/2d2908] Submitted process > pipeline:preprocess:call_adapter_scan (93)
+[26/994325] Submitted process > pipeline:preprocess:call_adapter_scan (94)
+[0c/2f6b74] Submitted process > pipeline:preprocess:call_adapter_scan (95)
+[02/543117] Submitted process > pipeline:preprocess:call_adapter_scan (96)
+[04/6db20c] Submitted process > pipeline:preprocess:call_adapter_scan (97)
+[2f/e0168d] Submitted process > pipeline:preprocess:call_adapter_scan (98)
+[f1/d2e831] Submitted process > pipeline:preprocess:call_adapter_scan (100)
+[67/c9aba8] Submitted process > pipeline:preprocess:call_adapter_scan (99)
+[89/bfeda9] Submitted process > pipeline:preprocess:call_adapter_scan (101)
+[60/2dc495] Submitted process > pipeline:preprocess:call_adapter_scan (103)
+[b2/d49c19] Submitted process > pipeline:preprocess:call_adapter_scan (102)
+[fc/b454c9] Submitted process > pipeline:preprocess:call_adapter_scan (104)
+[37/4d68f0] Submitted process > pipeline:preprocess:call_adapter_scan (106)
+[a8/b9461e] Submitted process > pipeline:preprocess:call_adapter_scan (105)
+[2c/09abd5] Submitted process > pipeline:preprocess:call_adapter_scan (107)
+[65/42769d] Submitted process > pipeline:preprocess:call_adapter_scan (108)
+[8e/55d640] Submitted process > pipeline:preprocess:call_adapter_scan (109)
+[ca/dea218] Submitted process > pipeline:preprocess:call_adapter_scan (110)
+[ac/c3455e] Submitted process > pipeline:preprocess:call_adapter_scan (111)
+[43/b87b41] Submitted process > pipeline:preprocess:call_adapter_scan (112)
+[de/c6be5f] Submitted process > pipeline:preprocess:call_adapter_scan (114)
+[d6/b002a1] Submitted process > pipeline:preprocess:call_adapter_scan (113)
+[46/eb21f5] Submitted process > pipeline:preprocess:call_adapter_scan (116)
+[c2/771c39] Submitted process > pipeline:preprocess:call_adapter_scan (115)
+[ba/08edd9] Submitted process > pipeline:preprocess:call_adapter_scan (117)
+[e6/89fe8c] Submitted process > pipeline:preprocess:call_adapter_scan (118)
+[34/b11fe5] Submitted process > pipeline:preprocess:call_adapter_scan (119)
+[f3/245427] Submitted process > pipeline:preprocess:call_adapter_scan (120)
+[67/0e3362] Submitted process > pipeline:preprocess:call_adapter_scan (127)
+[86/ccd1bf] Submitted process > pipeline:preprocess:call_adapter_scan (129)
+[79/cef42c] Submitted process > pipeline:preprocess:call_adapter_scan (123)
+[25/0b09ff] Submitted process > pipeline:preprocess:call_adapter_scan (124)
+[95/896e28] Submitted process > pipeline:preprocess:call_adapter_scan (125)
+[67/6fab69] Submitted process > pipeline:preprocess:call_adapter_scan (121)
+[21/cc0112] Submitted process > pipeline:preprocess:call_adapter_scan (122)
+[14/82c6a0] Submitted process > pipeline:preprocess:call_adapter_scan (126)
+[8f/6af6b6] Submitted process > pipeline:preprocess:call_adapter_scan (128)
+[b4/dafed8] Submitted process > pipeline:preprocess:call_adapter_scan (131)
+[7e/f548fd] Submitted process > pipeline:preprocess:call_adapter_scan (130)
+[32/0df73a] Submitted process > pipeline:preprocess:call_adapter_scan (132)
+[64/373bdb] Submitted process > pipeline:preprocess:call_adapter_scan (134)
+[11/103fd5] Submitted process > pipeline:preprocess:call_adapter_scan (133)
+[ec/f32b9c] Submitted process > pipeline:preprocess:call_adapter_scan (135)
+[e7/05faca] Submitted process > pipeline:preprocess:call_adapter_scan (136)
+[25/bf21fc] Submitted process > pipeline:preprocess:call_adapter_scan (137)
+[9b/e6a466] Submitted process > pipeline:preprocess:call_adapter_scan (138)
+[ba/dcadce] Submitted process > pipeline:preprocess:call_adapter_scan (139)
+[47/7cc38c] Submitted process > pipeline:preprocess:call_adapter_scan (140)
+[67/e69c4f] Submitted process > pipeline:preprocess:call_adapter_scan (141)
+[cc/b82847] Submitted process > pipeline:preprocess:call_adapter_scan (142)
+[63/6f3d9c] Submitted process > pipeline:preprocess:call_adapter_scan (143)
+[e1/81800c] Submitted process > pipeline:preprocess:call_adapter_scan (144)
+[d5/721ac7] Submitted process > pipeline:preprocess:call_adapter_scan (145)
+[14/0f0b52] Submitted process > pipeline:preprocess:call_adapter_scan (152)
+[28/d2854a] Submitted process > pipeline:preprocess:call_adapter_scan (147)
+[61/790577] Submitted process > pipeline:preprocess:call_adapter_scan (150)
+[f7/a464d2] Submitted process > pipeline:preprocess:call_adapter_scan (148)
+[00/401747] Submitted process > pipeline:preprocess:call_adapter_scan (146)
+[4d/634a4f] Submitted process > pipeline:preprocess:call_adapter_scan (149)
+[53/2d1c89] Submitted process > pipeline:preprocess:call_adapter_scan (151)
+[a5/fac391] Submitted process > pipeline:preprocess:call_adapter_scan (153)
+[37/e36023] Submitted process > pipeline:preprocess:call_adapter_scan (154)
+[c5/6c0729] Submitted process > pipeline:preprocess:call_adapter_scan (156)
+[e6/2fa5b9] Submitted process > pipeline:preprocess:call_adapter_scan (157)
+[f2/73d82f] Submitted process > pipeline:preprocess:call_adapter_scan (155)
+[1e/08ca0b] Submitted process > pipeline:preprocess:call_adapter_scan (158)
+[f0/762147] Submitted process > pipeline:preprocess:call_adapter_scan (159)
+[c0/ed3e7a] Submitted process > pipeline:preprocess:call_adapter_scan (160)
+[0d/9b8a37] Submitted process > pipeline:preprocess:call_adapter_scan (161)
+[a7/b6d85d] Submitted process > pipeline:preprocess:call_adapter_scan (162)
+[35/70de97] Submitted process > pipeline:preprocess:call_adapter_scan (163)
+[be/380724] Submitted process > pipeline:preprocess:call_adapter_scan (165)
+[75/b274a5] Submitted process > pipeline:preprocess:call_adapter_scan (164)
+[4e/12e4b7] Submitted process > pipeline:preprocess:call_adapter_scan (167)
+[ce/4b2d25] Submitted process > pipeline:preprocess:call_adapter_scan (168)
+[55/546013] Submitted process > pipeline:preprocess:call_adapter_scan (166)
+[43/d46f7d] Submitted process > pipeline:preprocess:call_adapter_scan (170)
+[70/24460a] Submitted process > pipeline:preprocess:call_adapter_scan (169)
+[c5/aee1fb] Submitted process > pipeline:preprocess:call_adapter_scan (171)
+[1c/b4e747] Submitted process > pipeline:preprocess:call_adapter_scan (172)
+[56/2ab3ab] Submitted process > pipeline:preprocess:call_adapter_scan (173)
+[3a/914cdd] Submitted process > pipeline:preprocess:call_adapter_scan (174)
+[6a/7d9f3b] Submitted process > pipeline:preprocess:call_adapter_scan (175)
+[2d/24c68d] Submitted process > pipeline:preprocess:call_adapter_scan (176)
+[ec/0ee966] Submitted process > pipeline:preprocess:call_adapter_scan (177)
+[c3/991938] Submitted process > pipeline:preprocess:call_adapter_scan (178)
+[5d/8ee3eb] Submitted process > pipeline:preprocess:call_adapter_scan (179)
+[e2/808d55] Submitted process > pipeline:preprocess:call_adapter_scan (180)
+[a3/7666f7] Submitted process > pipeline:preprocess:call_adapter_scan (181)
+[a0/c58efb] Submitted process > pipeline:preprocess:summarize_adapter_table (1)
+[2f/ff954a] Submitted process > pipeline:process_bams:generate_whitelist (1)
+[0d/ca7ad8] Submitted process > pipeline:process_bams:merge_bams (1)
+[06/409e23] Submitted process > pipeline:process_bams:assign_barcodes (2)
+[d3/54ff99] Submitted process > pipeline:process_bams:assign_barcodes (23)
+[70/a4d445] Submitted process > pipeline:process_bams:assign_barcodes (7)
+[01/e3da76] Submitted process > pipeline:process_bams:assign_barcodes (10)
+[32/ba1b09] Submitted process > pipeline:process_bams:assign_barcodes (20)
+[33/396427] Submitted process > pipeline:process_bams:assign_barcodes (19)
+[61/49e6e9] Submitted process > pipeline:process_bams:assign_barcodes (26)
+[ca/8eff6f] Submitted process > pipeline:process_bams:assign_barcodes (22)
+[3a/2ed433] Submitted process > pipeline:process_bams:assign_barcodes (8)
+[7e/b9e798] Submitted process > pipeline:process_bams:assign_barcodes (15)
+[5b/711ee0] Submitted process > pipeline:process_bams:assign_barcodes (1)
+[d9/d6de21] Submitted process > pipeline:process_bams:assign_barcodes (18)
+[89/16c458] Submitted process > pipeline:process_bams:assign_barcodes (13)
+[77/49b889] Submitted process > pipeline:process_bams:assign_barcodes (25)
+[8b/193f1b] Submitted process > pipeline:process_bams:assign_barcodes (9)
+[61/82d7d5] Submitted process > pipeline:process_bams:assign_barcodes (29)
+[41/0aa883] Submitted process > pipeline:process_bams:assign_barcodes (16)
+[df/d9d65c] Submitted process > pipeline:process_bams:assign_barcodes (17)
+[70/0dd014] Submitted process > pipeline:process_bams:assign_barcodes (32)
+[39/8c8be1] Submitted process > pipeline:process_bams:assign_barcodes (27)
+[4b/ca9d87] Submitted process > pipeline:process_bams:assign_barcodes (5)
+[b1/22d5bc] Submitted process > pipeline:process_bams:assign_barcodes (6)
+[a1/2a4b8e] Submitted process > pipeline:process_bams:assign_barcodes (3)
+[cb/f93697] Submitted process > pipeline:process_bams:assign_barcodes (12)
+[cf/cbeed3] Submitted process > pipeline:process_bams:assign_barcodes (21)
+[a1/d2ba95] Submitted process > pipeline:process_bams:assign_barcodes (31)
+[c6/c6007b] Submitted process > pipeline:process_bams:assign_barcodes (11)
+[7d/f06da2] Submitted process > pipeline:process_bams:assign_barcodes (4)
+[eb/f0435d] Submitted process > pipeline:process_bams:assign_barcodes (14)
+[f5/44158c] Submitted process > pipeline:process_bams:assign_barcodes (24)
+[74/69ff6d] Submitted process > pipeline:process_bams:assign_barcodes (28)
+[e3/7769c4] Submitted process > pipeline:process_bams:assign_barcodes (30)
+[72/fb843c] Submitted process > pipeline:process_bams:assign_barcodes (33)
+[d2/cec4a0] Submitted process > pipeline:process_bams:assign_barcodes (35)
+[14/48db6b] Submitted process > pipeline:process_bams:assign_barcodes (34)
+[82/a8ca3d] Submitted process > pipeline:process_bams:assign_barcodes (36)
+[2c/395851] Submitted process > pipeline:process_bams:assign_barcodes (37)
+[bc/323e99] Submitted process > pipeline:process_bams:assign_barcodes (38)
+[20/03908b] Submitted process > pipeline:process_bams:assign_barcodes (179)
+[50/b7543a] Submitted process > pipeline:process_bams:assign_barcodes (39)
+[58/0be7fd] Submitted process > pipeline:process_bams:assign_barcodes (40)
+[64/dfcde7] Submitted process > pipeline:process_bams:assign_barcodes (41)
+[33/136e74] Submitted process > pipeline:process_bams:assign_barcodes (42)
+[e8/0b1d96] Submitted process > pipeline:process_bams:assign_barcodes (43)
+[1a/97b372] Submitted process > pipeline:process_bams:assign_barcodes (44)
+[5c/85de55] Submitted process > pipeline:process_bams:assign_barcodes (45)
+[75/39b2cd] Submitted process > pipeline:process_bams:assign_barcodes (46)
+[58/cb3883] Submitted process > pipeline:process_bams:assign_barcodes (47)
+[9b/b13eeb] Submitted process > pipeline:process_bams:assign_barcodes (48)
+[58/5be164] Submitted process > pipeline:process_bams:assign_barcodes (49)
+[fd/5803ad] Submitted process > pipeline:process_bams:assign_barcodes (50)
+[7a/2656c7] Submitted process > pipeline:process_bams:assign_barcodes (51)
+[3b/8a8bbf] Submitted process > pipeline:process_bams:assign_barcodes (52)
+[94/ffcea3] Submitted process > pipeline:process_bams:assign_barcodes (53)
+[c3/c57885] Submitted process > pipeline:process_bams:assign_barcodes (54)
+[67/265e5c] Submitted process > pipeline:process_bams:assign_barcodes (55)
+[3a/4c5568] Submitted process > pipeline:process_bams:assign_barcodes (56)
+[df/94a5cb] Submitted process > pipeline:process_bams:assign_barcodes (57)
+[03/a980da] Submitted process > pipeline:process_bams:assign_barcodes (58)
+[7e/767cb9] Submitted process > pipeline:process_bams:assign_barcodes (59)
+[c2/ad041f] Submitted process > pipeline:process_bams:assign_barcodes (87)
+[f3/25305a] Submitted process > pipeline:process_bams:assign_barcodes (60)
+[5c/13056a] Submitted process > pipeline:process_bams:assign_barcodes (88)
+[d7/82e6ff] Submitted process > pipeline:process_bams:assign_barcodes (61)
+[c3/858f75] Submitted process > pipeline:process_bams:assign_barcodes (62)
+[1e/2fd2f5] Submitted process > pipeline:process_bams:assign_barcodes (64)
+[93/dbe1b3] Submitted process > pipeline:process_bams:assign_barcodes (63)
+[3c/ab368c] Submitted process > pipeline:process_bams:assign_barcodes (65)
+[33/d28aac] Submitted process > pipeline:process_bams:assign_barcodes (66)
+[ca/f97f32] Submitted process > pipeline:process_bams:assign_barcodes (68)
+[f1/e0c398] Submitted process > pipeline:process_bams:assign_barcodes (69)
+[41/fc815e] Submitted process > pipeline:process_bams:assign_barcodes (67)
+[ae/9d0b92] Submitted process > pipeline:process_bams:assign_barcodes (70)
+[2e/c3c4c7] Submitted process > pipeline:process_bams:assign_barcodes (71)
+[bc/cbbc45] Submitted process > pipeline:process_bams:assign_barcodes (72)
+[d5/b31bb9] Submitted process > pipeline:process_bams:assign_barcodes (73)
+[f5/d69a5d] Submitted process > pipeline:process_bams:assign_barcodes (75)
+[9b/25ad32] Submitted process > pipeline:process_bams:assign_barcodes (74)
+[9b/e37959] Submitted process > pipeline:process_bams:assign_barcodes (76)
+[f7/11ef76] Submitted process > pipeline:process_bams:assign_barcodes (77)
+[e3/3a8cee] Submitted process > pipeline:process_bams:assign_barcodes (79)
+[8e/d9c790] Submitted process > pipeline:process_bams:assign_barcodes (80)
+[59/49667b] Submitted process > pipeline:process_bams:assign_barcodes (81)
+[d2/50998a] Submitted process > pipeline:process_bams:assign_barcodes (82)
+[25/4e04c3] Submitted process > pipeline:process_bams:assign_barcodes (83)
+[c6/fe4588] Submitted process > pipeline:process_bams:assign_barcodes (84)
+[ff/0e34c7] Submitted process > pipeline:process_bams:assign_barcodes (78)
+[f6/195e9d] Submitted process > pipeline:process_bams:assign_barcodes (85)
+[40/f971df] Submitted process > pipeline:process_bams:assign_barcodes (86)
+[32/849a2d] Submitted process > pipeline:process_bams:assign_barcodes (89)
+[79/002949] Submitted process > pipeline:process_bams:assign_barcodes (90)
+[78/fc6659] Submitted process > pipeline:process_bams:assign_barcodes (91)
+[d3/472274] Submitted process > pipeline:process_bams:assign_barcodes (92)
+[6c/8cd96a] Submitted process > pipeline:process_bams:assign_barcodes (93)
+[69/8acdd0] Submitted process > pipeline:process_bams:assign_barcodes (94)
+[82/f7b62f] Submitted process > pipeline:process_bams:assign_barcodes (95)
+[f3/92a7cd] Submitted process > pipeline:process_bams:assign_barcodes (96)
+[28/2ff0c4] Submitted process > pipeline:process_bams:assign_barcodes (97)
+[6d/3d2839] Submitted process > pipeline:process_bams:assign_barcodes (99)
+[21/622148] Submitted process > pipeline:process_bams:assign_barcodes (98)
+[e2/aceaab] Submitted process > pipeline:process_bams:assign_barcodes (100)
+[43/e8c238] Submitted process > pipeline:process_bams:assign_barcodes (101)
+[c9/13fd9d] Submitted process > pipeline:process_bams:assign_barcodes (102)
+[e0/38f98a] Submitted process > pipeline:process_bams:assign_barcodes (104)
+[09/e2dda5] Submitted process > pipeline:process_bams:assign_barcodes (103)
+[02/34563c] Submitted process > pipeline:process_bams:assign_barcodes (105)
+[f7/64e5fc] Submitted process > pipeline:process_bams:assign_barcodes (106)
+[1a/6e9608] Submitted process > pipeline:process_bams:assign_barcodes (107)
+[2c/7c464d] Submitted process > pipeline:process_bams:assign_barcodes (108)
+[aa/322504] Submitted process > pipeline:process_bams:assign_barcodes (110)
+[a7/56f3f2] Submitted process > pipeline:process_bams:assign_barcodes (109)
+[a3/c80454] Submitted process > pipeline:process_bams:assign_barcodes (112)
+[97/c9dff4] Submitted process > pipeline:process_bams:assign_barcodes (111)
+[56/26badb] Submitted process > pipeline:process_bams:assign_barcodes (113)
+[55/1ded8d] Submitted process > pipeline:process_bams:assign_barcodes (114)
+[59/65ef2c] Submitted process > pipeline:process_bams:assign_barcodes (115)
+[57/7f234d] Submitted process > pipeline:process_bams:assign_barcodes (117)
+[ba/bde0de] Submitted process > pipeline:process_bams:assign_barcodes (116)
+[6e/51d77f] Submitted process > pipeline:process_bams:assign_barcodes (118)
+[d0/1a9b24] Submitted process > pipeline:process_bams:assign_barcodes (119)
+[2c/49eb3c] Submitted process > pipeline:process_bams:assign_barcodes (120)
+[5b/1d04ac] Submitted process > pipeline:process_bams:assign_barcodes (121)
+[19/d7b945] Submitted process > pipeline:process_bams:assign_barcodes (122)
+[57/e6a230] Submitted process > pipeline:process_bams:assign_barcodes (123)
+[3f/2e4758] Submitted process > pipeline:process_bams:assign_barcodes (124)
+[dc/beb071] Submitted process > pipeline:process_bams:assign_barcodes (125)
+[c5/4b0ad8] Submitted process > pipeline:process_bams:assign_barcodes (126)
+[68/056b34] Submitted process > pipeline:process_bams:assign_barcodes (127)
+[9c/65cdb1] Submitted process > pipeline:process_bams:assign_barcodes (129)
+[32/20db6f] Submitted process > pipeline:process_bams:assign_barcodes (128)
+[f8/f32896] Submitted process > pipeline:process_bams:assign_barcodes (130)
+[57/ae85c6] Submitted process > pipeline:process_bams:assign_barcodes (131)
+[c5/94d96c] Submitted process > pipeline:process_bams:assign_barcodes (133)
+[ae/8e185d] Submitted process > pipeline:process_bams:assign_barcodes (132)
+[8a/6fbc7e] Submitted process > pipeline:process_bams:assign_barcodes (134)
+[4a/9ea4c4] Submitted process > pipeline:process_bams:assign_barcodes (137)
+[cf/23e2bb] Submitted process > pipeline:process_bams:assign_barcodes (139)
+[06/652a8a] Submitted process > pipeline:process_bams:assign_barcodes (143)
+[c2/9cb4c4] Submitted process > pipeline:process_bams:assign_barcodes (141)
+[54/e427c9] Submitted process > pipeline:process_bams:assign_barcodes (146)
+[5b/5babce] Submitted process > pipeline:process_bams:assign_barcodes (135)
+[f9/626c1f] Submitted process > pipeline:process_bams:assign_barcodes (138)
+[e0/db9ded] Submitted process > pipeline:process_bams:assign_barcodes (140)
+[66/72f909] Submitted process > pipeline:process_bams:assign_barcodes (136)
+[b2/f6f036] Submitted process > pipeline:process_bams:assign_barcodes (142)
+[63/4c529d] Submitted process > pipeline:process_bams:assign_barcodes (144)
+[e0/1147fa] Submitted process > pipeline:process_bams:assign_barcodes (145)
+[0c/74239b] Submitted process > pipeline:process_bams:assign_barcodes (147)
+[e8/f3bd97] Submitted process > pipeline:process_bams:assign_barcodes (148)
+[5b/b46a0d] Submitted process > pipeline:process_bams:assign_barcodes (149)
+[6f/fac0bd] Submitted process > pipeline:process_bams:assign_barcodes (150)
+[89/386df5] Submitted process > pipeline:process_bams:assign_barcodes (151)
+[ed/6247a5] Submitted process > pipeline:process_bams:assign_barcodes (152)
+[a6/693d69] Submitted process > pipeline:process_bams:assign_barcodes (153)
+[08/970ac3] Submitted process > pipeline:process_bams:assign_barcodes (154)
+[fe/46aed1] Submitted process > pipeline:process_bams:assign_barcodes (155)
+[72/816394] Submitted process > pipeline:process_bams:assign_barcodes (156)
+[28/7fc9b7] Submitted process > pipeline:process_bams:assign_barcodes (157)
+[f9/bf125c] Submitted process > pipeline:process_bams:assign_barcodes (158)
+[09/ca92d8] Submitted process > pipeline:process_bams:assign_barcodes (159)
+[80/6607fc] Submitted process > pipeline:process_bams:assign_barcodes (160)
+[c2/5856a4] Submitted process > pipeline:process_bams:assign_barcodes (161)
+[2f/84f154] Submitted process > pipeline:process_bams:assign_barcodes (162)
+[12/a16196] Submitted process > pipeline:process_bams:assign_barcodes (164)
+[cb/30203c] Submitted process > pipeline:process_bams:assign_barcodes (165)
+[96/fdb7c6] Submitted process > pipeline:process_bams:assign_barcodes (163)
+[6e/22dc34] Submitted process > pipeline:process_bams:assign_barcodes (166)
+[b8/776113] Submitted process > pipeline:process_bams:assign_barcodes (167)
+[96/bb0392] Submitted process > pipeline:process_bams:assign_barcodes (168)
+[3e/f1c00f] Submitted process > pipeline:process_bams:assign_barcodes (169)
+[5a/160bc3] Submitted process > pipeline:process_bams:assign_barcodes (170)
+[79/6edfe2] Submitted process > pipeline:process_bams:assign_barcodes (173)
+[6d/192a2f] Submitted process > pipeline:process_bams:assign_barcodes (174)
+[28/fc9283] Submitted process > pipeline:process_bams:assign_barcodes (175)
+[55/21b797] Submitted process > pipeline:process_bams:assign_barcodes (176)
+[f5/7fdafb] Submitted process > pipeline:process_bams:assign_barcodes (177)
+[53/3e9dd4] Submitted process > pipeline:process_bams:assign_barcodes (178)
+[00/9164f4] Submitted process > pipeline:process_bams:assign_barcodes (180)
+[cf/ce8338] Submitted process > pipeline:process_bams:assign_barcodes (181)
+[8b/a8c0c6] Submitted process > pipeline:process_bams:assign_barcodes (171)
+[01/1619c1] Submitted process > pipeline:process_bams:assign_barcodes (172)
+[b2/24750d] Submitted process > pipeline:process_bams:stringtie (32)
+[ad/4b13e1] Submitted process > pipeline:process_bams:stringtie (6)
+[fe/d00828] Submitted process > pipeline:process_bams:stringtie (15)
+[38/46df1d] Submitted process > pipeline:process_bams:stringtie (2)
+[ec/195dc1] Submitted process > pipeline:process_bams:stringtie (23)
+[6c/fe6f39] Submitted process > pipeline:process_bams:stringtie (4)
+[62/b391b2] Submitted process > pipeline:process_bams:stringtie (21)
+[6e/bc33cb] Submitted process > pipeline:process_bams:stringtie (1)
+[4b/8922aa] Submitted process > pipeline:process_bams:stringtie (5)
+[3d/8313eb] Submitted process > pipeline:process_bams:stringtie (10)
+[82/275bd1] Submitted process > pipeline:process_bams:stringtie (3)
+[ff/5b0526] Submitted process > pipeline:process_bams:stringtie (31)
+[3f/9e1fcc] Submitted process > pipeline:process_bams:stringtie (12)
+[6a/0522b0] Submitted process > pipeline:process_bams:stringtie (18)
+[75/bbbb2d] Submitted process > pipeline:process_bams:stringtie (22)
+[1d/01c820] Submitted process > pipeline:process_bams:stringtie (26)
+[56/804a14] Submitted process > pipeline:process_bams:stringtie (25)
+[54/0577f4] Submitted process > pipeline:process_bams:stringtie (9)
+[db/597b21] Submitted process > pipeline:process_bams:stringtie (7)
+[2d/887ecc] Submitted process > pipeline:process_bams:stringtie (17)
+[e3/779bff] Submitted process > pipeline:process_bams:stringtie (8)
+[8a/f02538] Submitted process > pipeline:process_bams:stringtie (13)
+[79/7b889b] Submitted process > pipeline:process_bams:stringtie (28)
+[78/db5915] Submitted process > pipeline:process_bams:stringtie (14)
+[81/b78541] Submitted process > pipeline:process_bams:stringtie (27)
+[1b/a60a31] Submitted process > pipeline:process_bams:stringtie (19)
+[0b/73d69b] Submitted process > pipeline:process_bams:stringtie (24)
+[87/ba77a1] Submitted process > pipeline:process_bams:stringtie (20)
+[9d/18f503] Submitted process > pipeline:process_bams:stringtie (16)
+[8c/578178] Submitted process > pipeline:process_bams:stringtie (11)
+[8a/f8cff5] Submitted process > pipeline:process_bams:stringtie (29)
+[57/b0ab13] Submitted process > pipeline:process_bams:stringtie (33)
+[24/b03c71] Submitted process > pipeline:process_bams:stringtie (34)
+[74/0d6d5f] Submitted process > pipeline:process_bams:stringtie (36)
+[78/25a7ef] Submitted process > pipeline:process_bams:stringtie (35)
+[b7/26aa3a] Submitted process > pipeline:process_bams:stringtie (30)
+[c7/5575b9] Submitted process > pipeline:process_bams:stringtie (37)
+[6d/be2200] Submitted process > pipeline:process_bams:stringtie (39)
+[23/aa2e11] Submitted process > pipeline:process_bams:stringtie (38)
+[87/1f1783] Submitted process > pipeline:process_bams:cat_tags_by_chrom (1)
+[3c/1efbde] Submitted process > pipeline:process_bams:merge_and_publish_tsv (1)
+[c5/b8242e] Submitted process > pipeline:process_bams:align_to_transcriptome (1)
+[86/6ea040] Submitted process > pipeline:process_bams:align_to_transcriptome (2)
+[bc/031e97] Submitted process > pipeline:process_bams:align_to_transcriptome (3)
+[0b/3ffd05] Submitted process > pipeline:process_bams:align_to_transcriptome (4)
+[3a/42dad5] Submitted process > pipeline:process_bams:align_to_transcriptome (5)
+[8a/bf6f45] Submitted process > pipeline:process_bams:align_to_transcriptome (6)
+[ae/82c8cb] Submitted process > pipeline:process_bams:align_to_transcriptome (7)
+[e5/58fea7] Submitted process > pipeline:process_bams:align_to_transcriptome (8)
+[e5/a71cdb] Submitted process > pipeline:process_bams:align_to_transcriptome (9)
+[57/4bcd35] Submitted process > pipeline:process_bams:align_to_transcriptome (10)
+[01/5072c2] Submitted process > pipeline:process_bams:align_to_transcriptome (11)
+[64/a8a352] Submitted process > pipeline:process_bams:align_to_transcriptome (12)
+[4f/3d1f2f] Submitted process > pipeline:process_bams:align_to_transcriptome (13)
+[a7/e767a7] Submitted process > pipeline:process_bams:align_to_transcriptome (14)
+[54/edbead] Submitted process > pipeline:process_bams:align_to_transcriptome (15)
+[b7/2223a9] Submitted process > pipeline:process_bams:align_to_transcriptome (16)
+[7e/c780ad] Submitted process > pipeline:process_bams:align_to_transcriptome (17)
+[d0/95e2e2] Submitted process > pipeline:process_bams:align_to_transcriptome (18)
+[81/c03162] Submitted process > pipeline:process_bams:align_to_transcriptome (19)
+[cc/df5e0e] Submitted process > pipeline:process_bams:align_to_transcriptome (20)
+[e7/a82be3] Submitted process > pipeline:process_bams:align_to_transcriptome (21)
+[e4/07a256] Submitted process > pipeline:process_bams:align_to_transcriptome (22)
+[48/043d9a] Submitted process > pipeline:process_bams:align_to_transcriptome (23)
+[8a/1d4595] Submitted process > pipeline:process_bams:align_to_transcriptome (24)
+[2c/72ca21] Submitted process > pipeline:process_bams:align_to_transcriptome (25)
+[88/18c3f7] Submitted process > pipeline:process_bams:align_to_transcriptome (26)
+[f2/3e7c06] Submitted process > pipeline:process_bams:align_to_transcriptome (27)
+[c9/4c5c0f] Submitted process > pipeline:process_bams:align_to_transcriptome (28)
+[5a/f50b1e] Submitted process > pipeline:process_bams:align_to_transcriptome (29)
+[2f/1701f6] Submitted process > pipeline:process_bams:align_to_transcriptome (30)
+[3a/0f82a0] Submitted process > pipeline:process_bams:align_to_transcriptome (31)
+[76/6edcf8] Submitted process > pipeline:process_bams:align_to_transcriptome (32)
+[55/070ec6] Submitted process > pipeline:process_bams:align_to_transcriptome (33)
+[95/8ea0c5] Submitted process > pipeline:process_bams:align_to_transcriptome (34)
+[0c/5ea135] Submitted process > pipeline:process_bams:align_to_transcriptome (35)
+[12/502e89] Submitted process > pipeline:process_bams:align_to_transcriptome (36)
+[44/b07442] Submitted process > pipeline:process_bams:align_to_transcriptome (37)
+[13/13b66d] Submitted process > pipeline:process_bams:align_to_transcriptome (38)
+[6a/259604] Submitted process > pipeline:process_bams:align_to_transcriptome (39)
+[cc/3c5b90] Submitted process > pipeline:process_bams:assign_features (1)
+[5b/414e9e] Submitted process > pipeline:process_bams:assign_features (2)
+[44/364a2b] Submitted process > pipeline:process_bams:assign_features (3)
+[25/6f2824] Submitted process > pipeline:process_bams:assign_features (4)
+[d3/ed2af5] Submitted process > pipeline:process_bams:assign_features (5)
+[ad/8fc175] Submitted process > pipeline:process_bams:assign_features (6)
+[57/6b078e] Submitted process > pipeline:process_bams:assign_features (7)
+[bd/64db68] Submitted process > pipeline:process_bams:assign_features (8)
+[45/7a08ee] Submitted process > pipeline:process_bams:assign_features (9)
+[83/3a5334] Submitted process > pipeline:process_bams:assign_features (10)
+[db/839a38] Submitted process > pipeline:process_bams:assign_features (11)
+[39/fb4e3f] Submitted process > pipeline:process_bams:assign_features (12)
+[38/cb5490] Submitted process > pipeline:process_bams:assign_features (13)
+[47/5301ef] Submitted process > pipeline:process_bams:assign_features (14)
+[93/9d1faa] Submitted process > pipeline:process_bams:assign_features (15)
+[93/03dbc2] Submitted process > pipeline:process_bams:assign_features (16)
+[54/655b8c] Submitted process > pipeline:process_bams:assign_features (17)
+[e6/fbc456] Submitted process > pipeline:process_bams:assign_features (18)
+[63/b2878e] Submitted process > pipeline:process_bams:assign_features (19)
+[84/0d611b] Submitted process > pipeline:process_bams:assign_features (20)
+[4d/f54bb8] Submitted process > pipeline:process_bams:assign_features (21)
+[9d/fc3005] Submitted process > pipeline:process_bams:assign_features (22)
+[ca/d13de2] Submitted process > pipeline:process_bams:assign_features (23)
+[03/af1381] Submitted process > pipeline:process_bams:assign_features (24)
+[34/71c85a] Submitted process > pipeline:process_bams:assign_features (25)
+[59/3cb91d] Submitted process > pipeline:process_bams:assign_features (26)
+[db/f01768] Submitted process > pipeline:process_bams:assign_features (27)
+[aa/f33b15] Submitted process > pipeline:process_bams:assign_features (28)
+[d6/64c945] Submitted process > pipeline:process_bams:assign_features (29)
+[94/fc61a1] Submitted process > pipeline:process_bams:assign_features (30)
+[d6/b2d665] Submitted process > pipeline:process_bams:assign_features (31)
+[a3/4feabe] Submitted process > pipeline:process_bams:assign_features (32)
+[36/493bab] Submitted process > pipeline:process_bams:assign_features (33)
+[10/566f59] Submitted process > pipeline:process_bams:assign_features (34)
+[ca/fdee3a] Submitted process > pipeline:process_bams:assign_features (35)
+[c7/2cabb6] Submitted process > pipeline:process_bams:assign_features (36)
+[0a/7369bb] Submitted process > pipeline:process_bams:assign_features (37)
+[84/170b53] Submitted process > pipeline:process_bams:assign_features (38)
+[ce/b142e5] Submitted process > pipeline:process_bams:create_matrix (1)
+[b1/ad5d3d] Submitted process > pipeline:process_bams:create_matrix (2)
+[8f/ef3635] Submitted process > pipeline:process_bams:create_matrix (4)
+[e7/8b47dd] Submitted process > pipeline:process_bams:create_matrix (3)
+[4c/4ce258] Submitted process > pipeline:process_bams:create_matrix (5)
+[57/e2ed76] Submitted process > pipeline:process_bams:create_matrix (7)
+[2c/6a75c9] Submitted process > pipeline:process_bams:create_matrix (6)
+[40/203651] Submitted process > pipeline:process_bams:create_matrix (8)
+[e1/0e969f] Submitted process > pipeline:process_bams:create_matrix (10)
+[9a/0c61ef] Submitted process > pipeline:process_bams:create_matrix (9)
+[8a/d052db] Submitted process > pipeline:process_bams:create_matrix (11)
+[a0/5d92cb] Submitted process > pipeline:process_bams:create_matrix (12)
+[e1/43a39a] Submitted process > pipeline:process_bams:create_matrix (13)
+[ef/3015b4] Submitted process > pipeline:process_bams:create_matrix (14)
+[8c/f50bcc] Submitted process > pipeline:process_bams:create_matrix (15)
+[72/3dc84a] Submitted process > pipeline:process_bams:create_matrix (16)
+[b5/68e68d] Submitted process > pipeline:process_bams:create_matrix (17)
+[c8/5e7589] Submitted process > pipeline:process_bams:create_matrix (18)
+[59/dbf930] Submitted process > pipeline:process_bams:create_matrix (19)
+[92/95139c] Submitted process > pipeline:process_bams:create_matrix (20)
+[fc/f22226] Submitted process > pipeline:process_bams:create_matrix (21)
+[d1/34ea27] Submitted process > pipeline:process_bams:create_matrix (22)
+[25/c49e57] Submitted process > pipeline:process_bams:create_matrix (23)
+[b0/247c8f] Submitted process > pipeline:process_bams:create_matrix (24)
+[0e/41eb71] Submitted process > pipeline:process_bams:create_matrix (25)
+[11/ac73c7] Submitted process > pipeline:process_bams:create_matrix (26)
+[bf/647bc5] Submitted process > pipeline:process_bams:create_matrix (27)
+[68/0e85b2] Submitted process > pipeline:process_bams:create_matrix (28)
+[c3/9b0614] Submitted process > pipeline:process_bams:create_matrix (29)
+[b5/1c6284] Submitted process > pipeline:process_bams:create_matrix (30)
+[f5/3b88ca] Submitted process > pipeline:process_bams:create_matrix (31)
+[9a/4df3d5] Submitted process > pipeline:process_bams:create_matrix (32)
+[f6/23475e] Submitted process > pipeline:process_bams:create_matrix (33)
+[8c/98b6b2] Submitted process > pipeline:process_bams:create_matrix (34)
+[63/31e480] Submitted process > pipeline:process_bams:create_matrix (35)
+[93/744642] Submitted process > pipeline:process_bams:create_matrix (36)
+[08/5f8101] Submitted process > pipeline:process_bams:create_matrix (37)
+[e2/9c9736] Submitted process > pipeline:process_bams:create_matrix (38)
+[fa/0dcf34] Submitted process > pipeline:process_bams:merge_transcriptome (1)
+[c3/b88a30] Submitted process > pipeline:process_bams:tag_bam (1)
+[a7/79e953] Submitted process > pipeline:process_bams:combine_final_tag_files (1)
+[78/0d2031] Submitted process > pipeline:process_bams:process_matrix (2)
+[2d/3f3dbd] Submitted process > pipeline:process_bams:process_matrix (1)
+[37/b09ac5] Submitted process > pipeline:process_bams:umi_gene_saturation (1)
+[d2/f4d914] Submitted process > pipeline:process_bams:pack_images (1)
+[89/fa0631] Submitted process > pipeline:prepare_report_data (1)
+[2c/eba792] Submitted process > pipeline:makeReport (1)
+Waiting for file transfers to complete (1 files)
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e1/c4e628ef32d00e658941eecb346043
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cf/0c8dcdf50c00f9aef8f8672a5c2ded
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/55/537c130040d8d2e4f5e708ea2b0a34
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9b/7d37e1209da4ce4629b4864c8ce36e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6e/0a989f13d56997eb6e7b04b80e7f0c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b7/7833502ec87cab049266dd6ad85b58
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bf/cc3672f155a8eea3cbfcd30f673691
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7b/b3cd17e4bead43416df82170253913
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/79/cafe78411e0bc4b89dabf4b29e0020
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e7/4be65f66fc52003abd26936ede4f4d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/49/555ca93e39b73e64661c127ce06f8d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a0/1ed8ae7a0389c000178743a6cd79e5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/69/27f2711e953c845a4d706a94614766
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/33/529748c7d10b1dc049c6633e7cfdde
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/59/af1a4f1406ca0f1abf611e3578ba4b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/82/5f4449a9c7189b45d9b8368812f22c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/59/b07632b3ead0aa0f47143c44d241d9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/07/607a5de41e534d601eb5758c3ed7a3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/aa/ae36a1faacf811d1e9756fa1672463
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/41/e1a9190a356e14233d5ac5da0f5a72
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/86/c1e606957d1091c0fcf1492087a4cb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/71/4e11327778cbccdafe7e053be120ab
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b0/b05522b82f29840e35040b963c6825
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/77/79eea3e99add2a490002fc713a88eb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/58/e32138c1b73d7ae853d2fceff9b157
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/85/a60af475c1650a7ad9e5f07092cf7c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d9/e3b6496565a6d8d5973fefc76fbc80
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/38/ad7e514ddcb666386c4d8d30dd851f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3d/141dacca63a83fb132d50c8b0bbb31
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b0/92129add501250e431b8677676a4c7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/78/8e11b7ec585c92d2e8e19c2ae350b2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ff/75d094267cd50bc020cfffdd59f25e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bb/a2f16fcf82356428d4ffba84b25c2d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5b/06cf37c89251e4105515310b424e2e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/88/cea12a3d8b0e2b2b74d1c611ab4f73
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a7/aa5ed141d8e6add4be1d0f23a4241f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6d/9997532be334fd1caa3b7d60480622
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2a/933e967717bbe9f66d81e96b770661
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/46/913a7fd7d05deaea11a4c7d8004bad
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c9/3836de2e7f8403d43a4f97cf540af6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/43/744d6639ae88ad4b36a0a9bb284700
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a2/eaba1098cd8a3f11decb4e5dc4d1ba
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d6/95149d83e79a2cf6105197ca24284c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/16/76afd1bda0f0a4d8b455942913e854
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9c/1280131c2ebe5a8cfba5b7da1b38a5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/26/7300ee2aff5242f70b1decf7678c86
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9f/ae45054bfecd08425d19b5ae232d31
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a2/360047270eb46b921bff65fc72f659
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2a/62f6caa8fb2c09b7e56870819d2e4b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e2/d9bb2e72742a75da9f8487c32def2b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cc/9b2b2c8df35209f90a31a94cefa829
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/15/8dc83e2e078d524df1198fe1885d0f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/32/d269772226ef567307c3871940e307
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/02/d3eacfb6beea3691b8b696d8003898
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d0/1551f5adb4a5fcef8cc48261eeee58
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8b/b3416dac31666bdc498afb1c5be9f7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/73/4b6319b506fb5c3099ad4365b6d033
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/99/4d83fb0456779ba84d9f9c12c2ca42
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e2/989d7d71095827210eafb600a7a383
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b5/4874bae5de0ae72cd37eddfbca9611
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d3/2237d8c212291246b175596b1a6d62
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e2/2248a0b597a2808a707449b041de19
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/84/362a8f1f8081de8545ec5980044243
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/21/9f688f7efceb2bdb46dcdd149a320c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d0/a4b3172d14ec6b7467fe30b6054d44
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/df/26b5dab292766d3f30d3ef00eb1a3f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bc/2391409ba0d102c8447d6d74c6fccc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1f/be5bb40ca80d055135797aa39a121f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/38/ef93ea69fc963b73eeb82011f9188c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6c/d0bed1273c62089a7d626ab4634b11
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6a/9c98cdeb90839030f63a29cc8b7717
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e0/eae814a485ba1f2366493e9a8f2b61
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a3/235e2a832bf70409e22bf155078e2b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8b/6549abce8fb18a367f8518e99f9141
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/65/80d1d5532bcd0002e916376469fcf1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/14/645ba7c47652b8ba0dee9eb189e2a7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/dc/9dfe03d48b7e835afeec78c6e6432b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/aa/6b3a03b6bc6dcbe867cfc064d19dcb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b3/150ab3879b852ffe95b0043d0000e3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/20/c57927708ae4b68a7dd65dffcd411c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c9/9dda7614370562240ceb0d6b10f7e6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/78/d8804f2d04034ae4ebe8df62d7ba3c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/76/230560d88413dd2273ab7d32fbe97d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/51/8f07e16e8035c0130d5deafb4cdbb7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/46/41913e7b3e518ff4379b9e978e70b6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/24/037e02837206b310509f31a704c026
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/5c1b75bf943049e76356e5b0be9526
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/db/11d8413bc2391f933656a754f63807
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/60/04eef086684279b27af550eee1d996
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/fb2df6ad3044572c9388cfac1ad7bc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/31/427b926c1cc5611afa6ee03cce1567
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/5e70313bbea928233321ac8999c7c2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ee/bcff42e0a08702e0ecdd59f5cc3fac
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/06/e10af22e8e0e3a51995c950412f9b8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/33/23f84fff05ac51feee17153f04139a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a0/c56219b244ec9a799e943046d94687
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/32/dc4d3127d3ef9594ff17f285058a5b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0c/73de8c7474342a053332c9ddf352ee
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e5/4c3f000ae4e9de0b53c61d095b3974
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/dc/2d2908bf2115061abc4b1670c3837f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/26/9943250a89fb64b10cc23dd7d115c5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0c/2f6b74e83debd39a7faea5e043fe76
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/02/54311799fe486a9749ba5e7bbf471c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/04/6db20c7e3b698988aedd45b77001a2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2f/e0168d061badadb022303c36473957
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f1/d2e831e2324d22349ae9443635c121
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/67/c9aba8bb2791a6a012a9daf8103d12
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/89/bfeda961651a29ef1a1f6e2c352bcb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/60/2dc4955356bacea6476b840e85bbf0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b2/d49c19f5a092ef0ba9b5530fe92cce
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/fc/b454c9e0774ca04eeddccdaaba3fd8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/37/4d68f04ee0dba276daf1e7eab76afd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a8/b9461ee74867d09f931e25e5342f54
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/09abd55e19831b4c155b5c123c3cb6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/65/42769dc41b3a9ee9a1a9bcd4993238
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8e/55d640a67cd1e54a65b8ad2a4be951
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ca/dea2187760c461864ab83a5a692191
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ac/c3455e01909649f7dc0c6a8eafe736
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/43/b87b414e08974a416888aa376db4cd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/de/c6be5fe71fbfdede91717eb7fe16b3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d6/b002a1219616e1f27f0684ef288db8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/46/eb21f565ff36fed0d6e1f6acbc8ae2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c2/771c394b13a81bace3e5e63b830267
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ba/08edd9bf0bd886f80683301acd80c0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e6/89fe8ca8ee959a651e3444628ccc97
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/34/b11fe58d8843a57fed28dff8ffe702
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f3/245427a61a3e192eb23fff5bad882a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/67/0e3362c7f832040013309980cd7693
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/86/ccd1bfa3e7fb3bd414ae367a88a16f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/79/cef42c4da33acb08e220c59c6b9c29
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/25/0b09ff95146f16f7cb481ab282f76d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/95/896e28f7f83e1fffab89c2ac792e25
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/67/6fab69e3cff886fb3b803de13cad78
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/21/cc0112def849662b31612089b9d7ad
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/14/82c6a02f957989773b882abb7a8022
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8f/6af6b6660df5f7a8eef375838f05b4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b4/dafed8fa4204c83e56bad3ea862865
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7e/f548fd182df5a9eeccbedd816f3f17
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/32/0df73af0923a3c74474171cc4285a8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/64/373bdb1f9113efbf1e5d59af848b2f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/11/103fd5698b2dc27cf62b78c3170412
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ec/f32b9c7c7d48380dda4d27d7d37f02
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e7/05faca8253e2991ff20886516b3f40
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/25/bf21fc1b0352ed50f18c24254ecc21
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9b/e6a4663c1a76e9ad84de244a8f8917
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ba/dcadceceffabf1f105bb735aadf68d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/47/7cc38cd6b28bdb140ffd8701371ea2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/67/e69c4f74c6aba810f27e24857c80c8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cc/b82847a9358b8ee9390e4ad1634a3e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/63/6f3d9c09b259cbb86455cd14093d66
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e1/81800c8f2d6a29c3287d0b005926f7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d5/721ac7b6b3bcc1a980579c2070f6bd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/14/0f0b52e7c44edad34cc9395789e6cd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/28/d2854a92441b9991fdda827d45ae7e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/61/790577f0bde80488e15c5a83a4006b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f7/a464d2a193b721b61d2064f4bd12c7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/00/401747342a9cbcded4c0b216ab38df
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4d/634a4f4ed23c39026ef2b0f7772d26
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/53/2d1c890c5b3259db4b508c51313097
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a5/fac391fcf519e2bfb07a460ebcf58e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/37/e360231df31edf7bad2e125811f8bd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c5/6c0729e415582a95e989f41b9f89dc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e6/2fa5b9e769c8381b5d6d079dd39378
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f2/73d82fde5a5f3209d26fd535693e0c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1e/08ca0b2d98c2240e1a6a16eda7e9aa
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f0/762147b7a9a56ffd0569ea33813154
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c0/ed3e7a5d51844ca76afe7f09db5dd1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0d/9b8a37358a0d7d6eb176e7867b1bec
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a7/b6d85dd38f672f95a287bc829568be
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/35/70de97f0977b0bb75b74ee13f27ce3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/be/380724611b9decd2a72cc8046e1540
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/75/b274a560c355750f8ed7de697d0e13
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4e/12e4b719d87522b0a4de3c3934a692
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ce/4b2d25bcc3ca031b397493f0cb1d15
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/55/546013ca569977239545bf47a1c375
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/43/d46f7d643a48f216b3bda1392a770b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/70/24460a1fc0b2327591590b250d14ab
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c5/aee1fbb8426f73e155c1496c106556
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1c/b4e7478827a3f933f4b5693bc81479
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/56/2ab3ab187c1cdbf43d343525fa0995
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3a/914cdd24f91d3cf5ebc0d66505a792
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6a/7d9f3bb54f05310d083a3d2ed8baee
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2d/24c68d30f2a96af19b96b74038f709
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ec/0ee966bd94524b3ecfd5c285e37241
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/991938545224e4d0ff57794d8a9ae0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5d/8ee3eb46f6b2089afe2cfa3cf0749c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e2/808d5546f995a24b75e1e95bd436cb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a3/7666f7e8411b8eae454f7df4ab381e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a0/c58efb655102ce554641e6609f29ea
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2f/ff954a18c89a5d3234164647357b52
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0d/ca7ad80d87ba045ea0bc6fda0fce22
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/06/409e233a6c055b5204642910ed681f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d3/54ff99d058dfa72d5e9873256f4795
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/70/a4d445403c18906fbc17823be6ab45
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/01/e3da764817edf05596e90eb673a6ce
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/32/ba1b098cb6babaa4ba84fb0b3730be
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/33/396427936ab438057b07bcb2fbeda7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/61/49e6e92bbe100159f039beb89751a1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ca/8eff6f84f795c4bb7bcf53a3208aa1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3a/2ed433e84e7ae101691e6f5bfefee3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7e/b9e798e34ac7cc1f2eb249e71d644d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5b/711ee06ca6f951131ef59021a30fec
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d9/d6de21ae7fb38106ab35a52bae0689
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/89/16c458392f18f269ba78f4ff642524
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/77/49b8893038ea6e8b11e0d231c86db3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8b/193f1b0a30451ac6d33ea3efd70ca5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/61/82d7d57bfeed50f47791e52682b385
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/41/0aa883216480693bed14712c34dd32
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/df/d9d65c9041bcf207a19b94df96e53a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/70/0dd014daeb66db154b9e66e7488746
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/39/8c8be1d17aad4b588f6caae6c31775
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4b/ca9d875a03ca48fa11b4de6afd9e01
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b1/22d5bc59a2cd92804722189141f4a4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a1/2a4b8ea56c5db59d076b410d7a289d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cb/f93697e763eabf1095adccd77d3395
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cf/cbeed3a3de22e0f8e66b74eb1a7782
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a1/d2ba959887c0b352d6b6f59f63b1f9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c6/c6007bf4613d32b5b6dd1f64dd65ec
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7d/f06da2103def5be5ed1b7e274aec47
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/eb/f0435d83ab4f24825e043f047a79bf
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f5/44158c6a9a0eff357c7929bc7f540a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/74/69ff6d1d3430c24afed7032d666fd0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e3/7769c497fc2b53ed37b10253e5bb1b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/72/fb843cc64201eebf3cac6cdcafbf6b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d2/cec4a04efaa86f22d551be95b7b4f3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/14/48db6b70a0c0916fbdb6d6fe69034b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/82/a8ca3de340ee6d2bba4491f2abc17d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/395851588c0de4cc02c32164c23ae5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bc/323e99c0bf39b60dab4794951eb119
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/20/03908b0ccda8047f8236b36b43325b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/50/b7543af32608c8dfae25c93d39db0c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/58/0be7fd4baade3c1d3de441b13c7e39
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/64/dfcde7516fd8fbf354965a51bfea6e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/33/136e748142e900193162a8578a5ec2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e8/0b1d9691cf7664064ba37552e482e0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1a/97b37283465320870fbd7fe6f5b3fe
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5c/85de553391f3ada39e536a3d037335
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/75/39b2cdb23ebe9f8a0a7bc5ce1071ad
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/58/cb3883dbeff915c234e3264a34f716
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9b/b13eeba06731105423deb1665e2c80
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/58/5be16478a7f98c99e0d2c1233a4ce2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/fd/5803ad014dad0e8c422e2db6cdfb6b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7a/2656c7b2fe211e4df150b9bfb0695c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3b/8a8bbfb1406f79b9e855b0875c81a3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/94/ffcea3492d18ffa4d958f4a0d4c1de
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/c578854d89c0c95ad6d7312a7fdf82
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/67/265e5cfa53cc33a635d65b69b6eff5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3a/4c55687804704b2ca37df8d9d0a78b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/df/94a5cbd8221a6290f47e30ecb4d5e0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/03/a980dab925407c16c37ce066efc4ee
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7e/767cb98a39e4ea77199276fd7b7c9c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c2/ad041f3c3b73835d65d9e2db3403ec
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f3/25305a0467d7a2e827fd50dc3ef0f0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5c/13056a5aa8ca5b8e26452927e22b86
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d7/82e6ffee90a47d6d6951830cf5f935
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/858f75461a7be2560e2ad24913b2a9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1e/2fd2f5fbd2035662407ff9c974d0b0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/93/dbe1b36c29ea922cd725f1511ae5a8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3c/ab368cf0c3f7b05bce0696fe9c48fe
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/33/d28aac0b59129f263acc48d3874301
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ca/f97f323a21fb043bc851eb85f1e5e6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f1/e0c3981768003d4df52ba67cd6511d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/41/fc815ebea26c0445f5041d29b33757
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ae/9d0b921f1b0eb96df81b5b26ed6061
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2e/c3c4c75283db5dbbe238b0f946c41b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bc/cbbc4548c66e7a96d64ce836d66018
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d5/b31bb9aa727b3a390c9c30f44d00ed
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f5/d69a5d75416ee53f6142be96aa1fcb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9b/25ad328fe7e5ce24f61e539f2fe15a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9b/e37959a214787eaa5ba5197f51f78c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f7/11ef76a389a8858f48e64227f14cfc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e3/3a8ceec11ba7c58ccce63fe1d490b1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8e/d9c790e32c3c073b7d0be27950a500
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/59/49667bbc2d589478dc9e8d31ca6be4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d2/50998aa967323a036a26e8d3a881ca
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/25/4e04c322e014bc34a53e2bdb4ace56
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c6/fe4588237022f0566eefe93456b489
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ff/0e34c792ad32c401b9b113b2c285eb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f6/195e9d00d9562591fe7bb9045a3fbd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/40/f971df761af7a6a8ae351a03918570
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/32/849a2df2d06cfa696b078eecfd5319
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/79/0029490f7a01680c5e871a17526909
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/78/fc6659bcacab429303c57c96b74962
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d3/472274f47dd7bd6f46fbc9160897cc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6c/8cd96acff26bf10f2a0e485f4dcfe2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/69/8acdd04b47c228ff1274ae7cd7e841
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/82/f7b62fc47931caec1b8745ceb831ce
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f3/92a7cdccca842177434fb92897000a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/28/2ff0c45987e6de19e5d32064f5f17c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6d/3d2839c5ad595a525bd96070c9c8dd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/21/622148d500e4ec2c5f6c97c06f76b7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e2/aceaab2250928a782e79eb456b2336
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/43/e8c238adcd364c8711ce4295108ce4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c9/13fd9d8a5890aa57a8d504fdab443d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e0/38f98a00c1c5a9749240ac5fa150ed
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/09/e2dda572625e268ab543e62a71336e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/02/34563c97eeac4c5ec32ebab0294875
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f7/64e5fcbd328eefdd4f303596d1f8e6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1a/6e96080f81b9ec2a3fe6e2de0f88b9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/7c464d81dfb3786d6a0a834337da37
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/aa/32250439f2af428a9066b7a22a8b40
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a7/56f3f21d93a6ed7a8d475ebc436467
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a3/c804546c9236d9e7383d91d96dcc66
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/97/c9dff421bdf073c0e5d9e412221b46
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/56/26badb1590b3c522a7e8eae4978206
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/55/1ded8d30e7517dfa5a5499526d5009
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/59/65ef2ce2c07c6e096d309ca5cf060b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/7f234d11d06b64c560c7164ebd5188
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ba/bde0de920ed3687610a57cb993a70a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6e/51d77f9e4f1a9092867ac9dcd1d4e3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d0/1a9b24f46ec34b828efa3032290278
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/49eb3c8a385ad74696085aea98d516
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5b/1d04acb39282190c890cfecc41e486
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/19/d7b9454da04927bb99f2e99c963c88
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/e6a23021fbfed8f6e5378da6e88d4c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3f/2e475810aaa84ac34718ef32103e8a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/dc/beb0714dadc398eacbd27ab6cb1706
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c5/4b0ad88b37cce4c1881490ea8906f8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/68/056b3410e0a8c6a9bc938c2fa9f4f4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9c/65cdb1410f8f7e91c79d22b45e3e16
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/32/20db6ff1e90887b784ce1eadb55b61
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f8/f32896e5c70ab652df4c5b321783be
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/ae85c68d4bc1bd1d0df43649922bfa
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c5/94d96ce48c4ff17349f758d33ef5a0
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ae/8e185d609fd36d3edff2f57a1b5d49
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8a/6fbc7ed4d968f55d0491380f64d218
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4a/9ea4c44addb09616795ffe13edb46d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cf/23e2bb0104b42154e361ecc74904b1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/06/652a8aa2087f6c8573963a9dff040f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c2/9cb4c44bd734a6c55748e8a79c467c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/54/e427c9c97c21daa113922ea8ad4b74
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5b/5babceab0aab95ce093995ca76a0a9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f9/626c1fbb46d2b59a2215ce10864a4a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e0/db9ded9a3b2a7384cb954e0f32f62e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/66/72f90998c9c6663d8139a8b91f5c50
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b2/f6f036ea5ac816cbf05ace24208143
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/63/4c529de21da50c4e47396bd34ab985
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e0/1147fa0984b3475efdb4f0f3e80bf6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0c/74239b05aed5ee5482a91c0bcb43ec
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e8/f3bd97603d714909a966ee861d0cb7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5b/b46a0d1861704f13a48046cddff9a2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6f/fac0bd036239d33203bf936c648e9a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/89/386df58cca6bce30566c02040c6807
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ed/6247a52a5a88d125cd127436a4a54c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a6/693d6906c355aa55d1043c0bba58a7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/08/970ac351057ba9caa1c9ec573e8434
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/fe/46aed115efeac82fdebe60c2f3c8f5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/72/816394bf2f14e1ea09d1c2e8a750f4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/28/7fc9b704623092353c295c5f6dcbe9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f9/bf125ce7163bec1c4ab5b80967eba1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/09/ca92d838fdd6529ee50f287a871f7d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/80/6607fccc98d32e4fe482f542b6211f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c2/5856a44df05669341dfa203328398b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2f/84f15442382e9d129909f2ccebef85
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/12/a16196d922a262c6d0622ea178e01f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cb/30203c87b2084e34da1e786317f1e6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/96/fdb7c655d8b3e869c96de3035eae0f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6e/22dc34f7fffcdd72b1744bcd970a37
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b8/776113a567cf6b1c84cc712c92cde3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/96/bb03927bb0eb9773def34c3f7cb5cb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3e/f1c00fa4a749b5d6c09756fa76a5e1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5a/160bc31a55fef35d9b76db2eea1fcf
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/79/6edfe2acdacef705d4cbe598f153fc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6d/192a2f79c582883e7154a09d663384
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/28/fc928312d4d10df272a6d70e843432
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/55/21b797684caad40c5dea2cedc76361
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f5/7fdafb0eb378f9d58f744c9fa1e3b6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/53/3e9dd46cbbc0a8f939601d44a7a9e2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/00/9164f473e6670ee8071c7f2963b9ab
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cf/ce83380c0cc24df2a2b89a34101f2b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8b/a8c0c69470849fc75396df2bcedfd5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/01/1619c1441663cb1c1f82d3bac49e3e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b2/24750dfd2bf8cade8efba959a816dc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ad/4b13e138fccd403c46d10cdcec5a8f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/fe/d00828e788b16cc92168efa9e808ce
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/38/46df1d78e113161ec0ac1184f2ae3f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ec/195dc1b0cce311588b3ac908505aa1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6c/fe6f397a8e757282d357cb3b65463e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/62/b391b2a0c01cccc2f15fa04bb63d49
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6e/bc33cb5839ef1ffeeb7659addb56b6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4b/8922aa6864e5052acfb042e0335d0c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3d/8313ebf7fd36a2c110c347c6f933c8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/82/275bd1c034bb70b28ab683c1b7874c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ff/5b052615be2c9a62006b93a7063d7b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3f/9e1fccef231616a23f367c9598bd81
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6a/0522b09434a9fcd1a93c8f43a0d13a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/75/bbbb2d7f1da96e597f68f71b1fa634
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1d/01c820267db0ff9c664bf33d983f0a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/56/804a1437f07f59bef3b062ffe72800
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/54/0577f4e943d10b54e7a55e7c6e777c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/db/597b213991de2b5b979b615c739bd9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2d/887ecc0eca5991cf46ecfe9ced98c7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e3/779bff7fbbfaa0df17d3dc1e2eec88
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8a/f025383e2dacfec1740b71ac8f0aca
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/79/7b889b3aa020b7afbf8c1402ef6d4c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/78/db591562ba363b8809c6f49818a609
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/81/b7854170a86bb20229665777486b59
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/1b/a60a31ac0111801c41cea0a68ce2f2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0b/73d69b4ba9d5909255e655c680eea8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/87/ba77a1350fcb696ee77182a335f927
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9d/18f5035c6a2c1e3aa1fc31fb2c09e9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8c/578178f9d2ff3a9812b498bd6f4558
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8a/f8cff55871920655a4b0bc28d2a5cd
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/b0ab13fe38439e17db7c9d34f80cd4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/24/b03c7152a8ca4ffec868049aaf4d13
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/74/0d6d5f03080d029baba553d7e49ade
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/78/25a7ef95fea44f6601299b865e7964
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b7/26aa3a964fb7c2e0dc202ee013deb2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c7/5575b9635f774bda5751365425632a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6d/be22005066010a009e9db0b1c0ca85
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/23/aa2e114ba20c2af3240542817c620c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/87/1f178398ab704c55c011a191db3e08
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3c/1efbdef214c89dda8cd4e1785c60ce
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c5/b8242e69ac49369ad75458c393dbac
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/86/6ea04097ed16d58e6757397748e57e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bc/031e978c67684a40aea0e411c2659b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0b/3ffd05bbbe0224128d3175575bbdd7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3a/42dad5af9fedb5ef7ed416740d0e01
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8a/bf6f4530141711b87dd211513ad485
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ae/82c8cb56e92683ccff33677f8048b2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e5/58fea7c6dca554710e27c76f406487
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e5/a71cdb2df4f1ec64ea10a9b2b6626d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/4bcd350bb1172d4cc81f6785cbcaa9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/01/5072c2ca68704fbc8692a5095d5bec
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/64/a8a3522d5f666e657c9694931d105d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4f/3d1f2f287e7ff570c61d096d3b8bde
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a7/e767a778a1e6f317a78ec99ae0c9f9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/54/edbead851a798a84d881ea6b353aeb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b7/2223a9a44e144ebee699bc0bde32ba
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/7e/c780ad5df503a968ceb8a35ba76d40
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d0/95e2e293fe4d2afa2461bb3df161a5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/81/c0316286ad5e058c5d3364f07e31f9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cc/df5e0eeedc2d5b9d382645448ca09a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e7/a82be36e757ab0bd1e0c2f2f2f5c2c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e4/07a25667058ee675f48bd5af3d8c1a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/48/043d9af9e3a0fa86e2b60c43250d32
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8a/1d45952f6267dc2a0a7ce3fae1ba81
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/72ca21c9f35a60aa832b7fe68200f3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/88/18c3f719fe84de220feb2f4179e699
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f2/3e7c06d7b2e39c7467cfe23141d2e8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c9/4c5c0f7b7642d6b22593f2770d5d49
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5a/f50b1eb173af1efe874027972c10a7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2f/1701f6d92e0e1b4646554e4bbcf2ca
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/3a/0f82a086cf8807863a707d6d52e74f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/76/6edcf8beeb7730204869488c476c32
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/55/070ec67ffdf0b8b4167e6af083ca7b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/95/8ea0c5076b7b71987cc532a0c345b7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0c/5ea135e86afac01014e5ac55196892
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/12/502e89d12012399a85e8a8d60825cf
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/44/b0744270a9937742066aac0c5edb8e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/13/13b66d42421b2b237b05c6943d942d
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/6a/259604d06a41369052a447c4446be3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/cc/3c5b90906801981c5b34d6585c4877
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/5b/414e9ee30c0c4185dd9e4b90851179
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/44/364a2bd30acb8f5cc8617d2b1f1758
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/25/6f2824b3d2ed9016345e0042c14d78
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d3/ed2af50e0a0a0d15dcd1b2203e1ce1
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ad/8fc175a52a05f94d80cbb3709eabdc
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/6b078e12b870c63fab73b25f8720db
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bd/64db6835a6c9e146ebc6c2b0e3a0e9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/45/7a08ee91f4a77e0f8e930fac0d1156
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/83/3a5334c776e3f101fd23fcd6388c3a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/db/839a3863cf8df0516548eea3a3f798
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/39/fb4e3f1c7c3cfa9e876a63ef37e928
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/38/cb5490a9a79c7882c57a2105287421
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/47/5301efa60859801df9c9e2f140b7c5
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/93/9d1faaec651e818d0ec2819e16295b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/93/03dbc21c74cdc0ad498472f01e23e4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/54/655b8ce00e2358b311d0be722211da
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e6/fbc4563f27a7c10bd1aadb0996a687
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/63/b2878e15229c9aea7c174e5660abca
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/84/0d611b56aab6d7c2999fbd4b3cd847
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4d/f54bb86f16d72150edb8b28fb4ad37
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9d/fc3005be706dcf4b2c95e87df70f69
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ca/d13de214570fb8043abf0d43715e45
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/03/af13814aa98f53d50378fb5ead6f49
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/34/71c85ad6fe568a991c340b2c965650
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/59/3cb91d913debccce580f38f49391e3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/db/f01768e3f5cf20fb160621fc77528e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/aa/f33b159481dfdddfa5dbbe94133c08
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d6/64c945a1c28cee0a058948673f7018
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/94/fc61a1660fd50e81368e0848902432
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d6/b2d665877c7440c6d0c4f819cbbe00
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a3/4feabe8c42896cbba4a29a694d73f8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/36/493bab56016f85137bd041811d0562
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/10/566f59893512d49be7075993fdd72c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ca/fdee3a94d3f39bc5c1c303afca0881
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c7/2cabb66ace9fc3829bd844c2de8114
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0a/7369bbd5bcdcc35559a450856acd16
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/84/170b532ca0f8aeb643d623ad39c694
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ce/b142e5006ca8c0a6294b8f6e0c3513
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b1/ad5d3d346fa3e260ca8273ad9c7a7f
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8f/ef3635bd5937fd0443a70773b5ed68
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e7/8b47dd6a94d2ac2f4d5deacc0518a7
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/4c/4ce25822661f78f4f7a232c300185c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/57/e2ed76e0ae763f58547ea84ff4cd19
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/6a75c968534524bbb5d69d8ac8d8ae
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/40/20365178dd27a8277da826821ff726
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e1/0e969f167326ba6dba00bf91898938
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9a/0c61ef5a2188f107897f06c13f79e2
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8a/d052db966b7d67a92caa304049eb30
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a0/5d92cb30e1ba4929848b9346ec02ee
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e1/43a39a0984d6136b951e2429f82e8b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/ef/3015b40055b61651ed3ed504b05621
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8c/f50bcce6855d8ecfe184729dca995e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/72/3dc84a49ad26193e023fcef96949e6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b5/68e68d5b47dba7bf82d89e87f1da87
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c8/5e7589561ccf603a9626660371366c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/59/dbf930b04c040db9900ecc23c696e8
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/92/95139cab0e0c4e0ecd18e35ef5556a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/fc/f22226a1bf731f4bb1e8e61e420c3c
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d1/34ea27322125c4b792635d7a2680d3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/25/c49e572bf6dbcba16ada0fef546c92
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b0/247c8fad234726cdfbd18bbfced556
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/0e/41eb7185b42347b102507d01e0183a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/11/ac73c7809909c19bc597d84d4ad8af
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/bf/647bc58963fc4cf9c55e876e411068
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/68/0e85b2c99352e92b703c74bde0d044
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/9b0614b24517cbdd89b5a77e1baf75
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/b5/1c628420e2e75ce369db2924177adf
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f5/3b88caf1e3fae85d8408a922433c91
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/9a/4df3d55372612772496345084ba5a6
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/f6/23475e2952ce5f09a82db16a328dd9
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/8c/98b6b2d6a3add9f8f815a33c7bbe56
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/63/31e4800744dc0269325d684487ec86
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/93/7446426958d856f77e91a76975bc59
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/08/5f81015f75f70c17306080fc2a9315
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/e2/9c97360bf47f0ccb18c2709e241b95
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/fa/0dcf34f46f0081cbc821a7a0411adb
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/c3/b88a30ed8a8b911137fb7e53ebc22b
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/a7/79e953ce3e317ef79971b5ed5df21e
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/78/0d20316e5fe489845e0c9f34ffb526
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2d/3f3dbd4ae7b6b6c6ee69ee292d3314
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/37/b09ac5e821eae6ecf9d1ae787ee2e4
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/d2/f4d91437e6b23b78978d3f1bd0ea9a
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/89/fa06317243e97af9ede099e52708b3
+Removed /scratch/indikar_root/indikar1/shared_data/cc_fibroblast_full/work/2c/eba7921d777d9e576ae3393d811480
+2025-04-15 05:56:49,085 [INFO] Nextflow clean up complete!
+2025-04-15 05:56:49,086 [INFO] Pipeline complete!
