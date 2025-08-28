@@ -1,0 +1,107 @@
+import os
+import sys
+import glob
+import re
+from datetime import datetime
+from pathlib import Path
+import pandas as pd
+import yaml
+import json
+import tabulate 
+
+def printf(message, level="INFO"):
+    """Prints a message in log format: timestamp [LEVEL] message"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{timestamp} {message.strip()}")
+
+printf("Velocyto pipeline started.")
+
+# config details
+BASE_DIRECTORY = Path(workflow.basedir)
+CONFIG_PATH = "/config.yaml"
+CONFIG_BASENAME = os.path.basename(CONFIG_PATH)
+CONFIG_ABS_PATH = str(BASE_DIRECTORY) + CONFIG_PATH
+configfile: CONFIG_ABS_PATH 
+
+printf(f"Config path: {CONFIG_ABS_PATH}")
+
+# config 
+threads = config['threads']
+printf(f"Using {threads} threads")
+
+# paths
+OUTPUT = config['output_path']
+input_paths = config['input_paths']
+gtf_path = config['gtf_path'] 
+printf(f"Using gene annotations from: {gtf_path}")
+
+printf(f"Output path: {OUTPUT}")
+printf(f"Input paths ({len(input_paths)} files):")
+for f in input_paths:
+    printf(f"-{f}")
+
+
+
+rule all:
+    input:
+        OUTPUT + "merged.bam",
+        OUTPUT + "merged.tagged.bam",
+        OUTPUT + "bcfile.tsv",
+        OUTPUT + "annotations.gtf",
+        OUTPUT + 'velocyto.done',
+
+
+rule merge_bams:
+    input:
+        input_paths
+    output:
+        OUTPUT + "merged.bam",
+    conda:
+        'velocyto'
+    threads:
+        threads
+    shell:
+        """samtools merge -@ {threads} {output} {input}"""
+
+
+rule get_gtf:
+    input:
+        gtf_path
+    output:
+        OUTPUT + "annotations.gtf"
+    conda:
+        'velocyto'
+    shell:
+        """cp {input} {output}"""
+
+
+rule prep_velocyto:
+    input:
+        OUTPUT + 'merged.bam',
+    output:
+        bam=OUTPUT + 'merged.tagged.bam',
+        bcfile=OUTPUT + 'bcfile.tsv',
+    conda:
+        'velocyto'
+    shell:
+        """python prep_velocyto.py {input} {output.bam} {output.bcfile}"""
+
+
+
+rule run_velocyto:
+    input:
+        bam=OUTPUT + 'merged.tagged.bam',
+        gtf=OUTPUT + 'annotations.gtf',
+        bcfile=OUTPUT + 'bcfile.tsv',
+    output:
+        flag=touch(OUTPUT + 'velocyto.done'),
+    conda:
+        'velocyto'
+    threads:
+        config['threads'] // 2
+    params:
+        outdir=lambda wildcards: OUTPUT  
+    shell:
+        """velocyto run {input.bam} {input.gtf} \
+        --bcfile {input.bcfile} --samtools-threads {threads} \
+       --outputfolder {params.outdir}"""

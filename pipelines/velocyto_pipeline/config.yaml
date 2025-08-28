@@ -1,0 +1,14 @@
+output_path: "/scratch/indikar_root/indikar1/shared_data/fib_velocyto/"
+gtf_path: "/nfs/turbo/umms-indikar/shared/projects/reference_genome/prebuilt/refdata-gex-GRCh38-2024-A/genes/genes.gtf" 
+threads: 16
+
+input_paths:
+    - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/cc_fibroblast_full/scfib/scfib.tagged.bam
+    # - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/hsc_epi2me_full/fast_v3/fast_v3.tagged.bam
+    # - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/hsc_epi2me_full/fast_v4.2/fast_v4.2.tagged.bam
+    # - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/hsc_epi2me_full/hac_v3/hac_v3.tagged.bam
+    # - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/hsc_epi2me_full/hac_v4.2/hac_v4.2.tagged.bam
+    # - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/hsc_epi2me_full/hac_v4.3/hac_v4.3.tagged.bam
+    # - /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/hsc_epi2me_full/minion_384/minion_384.tagged.bam
+    
+    
