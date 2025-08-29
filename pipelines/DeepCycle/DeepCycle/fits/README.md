@@ -1,3 +1,3 @@
 # Gene Fits
 
-SVG plots of sine fits for genes used by DeepCycle.
+Per‑gene sine‑curve fits produced during DeepCycle training (SVG format).
