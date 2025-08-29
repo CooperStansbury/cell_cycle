@@ -1,0 +1,219 @@
+=== Job configuration ===
+JOB_NAME               = TrajectoryNet
+JOB_ID                 = 31527608
+ACCOUNT                = indikar1
+PARTITION              = gpu
+NODES                  = 1
+NTASKS                 = 1
+CPUS_PER_TASK          = 16
+MEM                    = 150G
+GPUS                   = 1
+TIME                   = 36:00:00
+
+=== Paths & parameters ===
+WORK_DIR               = /home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet
+INPUT_ADATA            = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/pseudotime.h5ad
+OUTPUT_DIR             = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet
+RUN_ID                 = 20250829_084302_31527608
+EMBEDDING_NAME         = umap
+MAX_DIM                = 10
+NITER                  = 10000
+VECINT                 = 1e-4
+PYTHON_BIN             = python
+
+Resetting output directory...
+OUTPUT_DIR (fresh)     = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet
+
+=== Environment ===
+HOSTNAME               = gl1013.arc-ts.umich.edu
+CUDA_VISIBLE_DEVICES   = 0
+Fri Aug 29 08:43:03 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.124.06             Driver Version: 570.124.06     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla V100-PCIE-16GB           On  |   00000000:D8:00.0 Off |                    0 |
+| N/A   31C    P0             24W /  250W |       1MiB /  16384MiB |      0%   E. Process |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+=== Training (TrajectoryNet.main) ===
+True
+[0 1 2]
+torch.Size([75])
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 6400, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+(75, 64000, 2)
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+making dir: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet/density2
+
+=== Evaluation (TrajectoryNet.eval) ===
+integrating backwards
+
+Done: Fri Aug 29 13:39:00 EDT 2025  Run ID: 20250829_084302_31527608
