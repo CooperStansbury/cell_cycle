@@ -1,13 +1,13 @@
 # Cell Cycle Analysis
 
-This repository hosts resources, notebooks, and pipelines for analyzing single-cell long-read gene expression in BJ fibroblasts across the cell cycle.
+Resources, notebooks, and pipelines for studying single-cell long‑read gene expression in BJ fibroblasts as they progress through the cell cycle.
 
 ![Overview of Cell Cycle Experiment](figures/experiement1.png)
 
 ## Repository Structure
-- `notebooks/` – exploratory Jupyter notebooks and helpers.
-- `pipelines/` – reproducible workflows such as Velocyto and DeepCycle.
-- `resources/` – reference files and gene lists.
-- `figures/` – project figures including the experiment overview.
+- `notebooks/` – exploratory Jupyter notebooks and utility modules.
+- `pipelines/` – reproducible workflows such as Velocyto, DeepCycle, and single‑cell processing pipelines.
+- `resources/` – reference data sets and curated gene lists.
+- `figures/` – generated figures for reports and manuscripts.
 
-Each directory contains a README with additional details.
+Each subdirectory includes a README describing its contents.

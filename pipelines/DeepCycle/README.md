@@ -1,16 +1,17 @@
 # DeepCycle Scripts
 
-Utilities for running the [DeepCycle](https://github.com/MCalebO/DeepCycle) model to estimate cell-cycle position.
+Tools for running the [DeepCycle](https://github.com/MCalebO/DeepCycle) neural network to estimate cell‑cycle phase.
 
 ## Environment
+Create the Conda environment:
 
-```
+```bash
 mamba env create -f env.yaml --prefix [PATH]
 ```
 
 ## Contents
-- `run_deepcycle.sh` – example SLURM submission script invoking `DeepCycle.py`
-- `DeepCycle/` – directory containing model weights and output files
+- `run_deepcycle.sh` – example SLURM submission invoking `DeepCycle.py`
+- `DeepCycle/` – model weights, outputs, and diagnostic plots
 
 ## Usage
-Edit variables in `run_deepcycle.sh` to point to your data and submit with `sbatch`. GPU resources are recommended.
+Edit variables in `run_deepcycle.sh` to point to your data and submit with `sbatch`. A GPU‑equipped node is recommended.

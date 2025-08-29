@@ -1,5 +1,5 @@
 # Figures
 
-This directory contains project figures.
+Figures and diagrams referenced throughout the project.
 
-- `experiement1.png` – overview of the cell cycle experiment.
+- `experiement1.png` – overview of the cell cycle experiment setup.

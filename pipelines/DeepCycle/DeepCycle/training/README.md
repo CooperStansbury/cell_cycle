@@ -1,6 +1,6 @@
 # Training Plots
 
-Visualizations of DeepCycle training progress.
+Diagnostics of DeepCycle training.
 
-- `autoencoder_training.svg`
-- `encoder_pretraining.svg`
+- `autoencoder_training.svg` – loss curve for full model.
+- `encoder_pretraining.svg` – pretraining loss for the encoder.
