@@ -1,0 +1,51 @@
+=== Job configuration ===
+JOB_NAME               = TrajectoryNet
+JOB_ID                 = 31707737
+ACCOUNT                = indikar1
+PARTITION              = gpu
+NODES                  = 1
+NTASKS                 = 1
+CPUS_PER_TASK          = 16
+MEM                    = 150G
+GPUS                   = 1
+TIME                   = 36:00:00
+
+=== Paths & parameters ===
+WORK_DIR               = /home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet
+INPUT_ADATA            = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input.h5ad
+OUTPUT_DIR             = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet
+RUN_ID                 = 20250902_104326_31707737
+EMBEDDING_NAME         = pca
+MAX_DIM                = 50
+NITER                  = 10000
+VECINT                 = 1e-4
+PYTHON_BIN             = python
+
+Resetting output directory...
+OUTPUT_DIR (fresh)     = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet
+
+=== Environment ===
+HOSTNAME               = gl1014.arc-ts.umich.edu
+CUDA_VISIBLE_DEVICES   = 0
+Tue Sep  2 10:43:26 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.124.06             Driver Version: 570.124.06     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  Tesla V100-PCIE-16GB           On  |   00000000:3B:00.0 Off |                    0 |
+| N/A   30C    P0             24W /  250W |       1MiB /  16384MiB |      0%   E. Process |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+                                                                                         
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+
+=== Training (TrajectoryNet.main) ===

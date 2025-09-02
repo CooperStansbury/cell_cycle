@@ -91,7 +91,6 @@ srun --ntasks=${SLURM_NTASKS:-1} --cpus-per-task=${SLURM_CPUS_PER_TASK:-16} \
     --embedding_name "$EMBEDDING_NAME" \
     --max_dim "$MAX_DIM" \
     --niter "$NITER" \
-    --gpu 1 \ # use GPU
     --vecint "$VECINT" \
     --save "$OUTPUT_DIR"
 set +x
