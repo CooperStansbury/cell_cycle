@@ -17,12 +17,12 @@
 set -euo pipefail
 
 # ---------- user-adjustable variables ----------
-INPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/pseudotime.h5ad"
+INPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input.h5ad"
 OUTPUT_DIR="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet"
 
 # TrajectoryNet parameters
-EMBEDDING_NAME="umap"
-MAX_DIM=10
+EMBEDDING_NAME="pca"
+MAX_DIM=50
 NITER=10000
 VECINT="1e-4"
 
@@ -91,6 +91,7 @@ srun --ntasks=${SLURM_NTASKS:-1} --cpus-per-task=${SLURM_CPUS_PER_TASK:-16} \
     --embedding_name "$EMBEDDING_NAME" \
     --max_dim "$MAX_DIM" \
     --niter "$NITER" \
+    --gpu 1 \ # use GPU
     --vecint "$VECINT" \
     --save "$OUTPUT_DIR"
 set +x
