@@ -14,4 +14,4 @@ mamba env create -f env.yaml --prefix [PATH]
 - `DeepCycle/` – model weights, outputs, and diagnostic plots
 
 ## Usage
-Edit variables in `run_deepcycle.sh` to point to your data and submit with `sbatch`. A GPU‑equipped node is recommended.
+Edit variables in `run_deepcycle.sh` to point to your data and submit with `sbatch`. A GPU‑equipped node is recommended. The script expects an input expression matrix and produces phase estimates and diagnostic plots under the `DeepCycle/` directory.
