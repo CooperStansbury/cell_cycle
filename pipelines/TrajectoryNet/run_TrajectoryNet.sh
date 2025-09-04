@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=TrajectoryNet
+#SBATCH --job-name=umap
 #SBATCH --account=indikar1
 #SBATCH --partition=gpu,gpu_mig40,spgpu
 #SBATCH --mail-user=cstansbu@umich.edu
@@ -18,13 +18,15 @@ set -euo pipefail
 
 # ---------- user-adjustable variables ----------
 INPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input.h5ad"
-OUTPUT_DIR="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet"
+OUTPUT_DIR="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/umap"
 
 # TrajectoryNet parameters
-EMBEDDING_NAME="pca"
-MAX_DIM=50
+EMBEDDING_NAME="umap"
+MAX_DIM=10
 NITER=10000
 VECINT="1e-4"
+WORKERS=16
+BATCH_SIZE=5000
 
 # Execution
 PYTHON_BIN="python"          # or full path to python in your env
@@ -60,12 +62,6 @@ print_var "VECINT"              "$VECINT"
 print_var "PYTHON_BIN"          "$PYTHON_BIN"
 echo
 
-# ---------- sanity checks ----------
-if [[ ! -f "$INPUT_ADATA" ]]; then
-  echo "ERROR: INPUT_ADATA not found: $INPUT_ADATA" >&2
-  exit 1
-fi
-
 # ---------- prepare output directory (reset/overwrite) ----------
 echo "Resetting output directory..."
 rm -rf "$OUTPUT_DIR"
@@ -73,40 +69,33 @@ mkdir -p "$OUTPUT_DIR"
 print_var "OUTPUT_DIR (fresh)"  "$OUTPUT_DIR"
 echo
 
-# ---------- environment info ----------
-echo "=== Environment ==="
-print_var "HOSTNAME"            "${HOSTNAME:-N/A}"
-print_var "CUDA_VISIBLE_DEVICES" "${CUDA_VISIBLE_DEVICES:-auto}"
-command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi || echo "nvidia-smi not available"
-echo
-
 # ---------- run ----------
 cd "$WORK_DIR"
 
 echo "=== Training (TrajectoryNet.main) ==="
-set -x
-srun --ntasks=${SLURM_NTASKS:-1} --cpus-per-task=${SLURM_CPUS_PER_TASK:-16} \
-  ${PYTHON_BIN} -m TrajectoryNet.main \
+${PYTHON_BIN} -m TrajectoryNet.main \
     --dataset "$INPUT_ADATA" \
     --embedding_name "$EMBEDDING_NAME" \
     --max_dim "$MAX_DIM" \
-    --niter "$NITER" \
+    --niters "$NITER" \
+    --gpu 0 \
+    --num_workers "$WORKERS" \
+    --batch_size "$BATCH_SIZE" \
     --vecint "$VECINT" \
     --save "$OUTPUT_DIR"
-set +x
 echo
 
 echo "=== Evaluation (TrajectoryNet.eval) ==="
-set -x
-srun --ntasks=${SLURM_NTASKS:-1} --cpus-per-task=${SLURM_CPUS_PER_TASK:-16} \
-  ${PYTHON_BIN} -m TrajectoryNet.eval \
+${PYTHON_BIN} -m TrajectoryNet.eval \
     --dataset "$INPUT_ADATA" \
     --embedding_name "$EMBEDDING_NAME" \
     --max_dim "$MAX_DIM" \
-    --niter "$NITER" \
+    --niters "$NITER" \
     --vecint "$VECINT" \
+    --gpu 0 \
+    --num_workers "$WORKERS" \
+    --batch_size "$BATCH_SIZE" \
     --save "$OUTPUT_DIR"
-set +x
 echo
 
 echo "Done: $(date)  Run ID: $RUN_ID"

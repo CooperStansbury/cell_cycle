@@ -1,0 +1,27 @@
+=== Job configuration ===
+JOB_NAME               = TJNET_no_vel
+JOB_ID                 = 31884435
+ACCOUNT                = indikar1
+PARTITION              = gpu
+NODES                  = 1
+NTASKS                 = 1
+CPUS_PER_TASK          = 16
+MEM                    = 150G
+GPUS                   = 1
+TIME                   = 36:00:00
+
+=== Paths & parameters ===
+WORK_DIR               = /home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet
+INPUT_ADATA            = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input_by_phase.h5ad
+OUTPUT_DIR             = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet_no_vel
+RUN_ID                 = 20250904_085956_31884435
+EMBEDDING_NAME         = X_pca
+MAX_DIM                = 10
+NITER                  = 10000
+VECINT                 = 1e-4
+PYTHON_BIN             = python
+
+Resetting output directory...
+OUTPUT_DIR (fresh)     = /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajectoryNet_no_vel
+
+=== Training (TrajectoryNet.main) ===

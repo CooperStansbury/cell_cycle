@@ -1,0 +1,1664 @@
+/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/main.py:437: DeprecationWarning: Bitwise inversion '~' on bool is deprecated and will be removed in Python 3.16. This returns the bitwise inversion of the underlying int object and is usually not what you expect from negating a bool. Use the 'not' operator for boolean negation or ~int(x) if you really want the bitwise inversion of the underlying int.
+  displaying=~args.no_display_loss,
+/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/main.py
+""" main.py
+
+Learns ODE from scrna data
+
+"""
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+
+from TrajectoryNet.lib.growth_net import GrowthNet
+from TrajectoryNet.lib import utils
+from TrajectoryNet.lib.visualize_flow import visualize_transform
+from TrajectoryNet.lib.viz_scrna import (
+    save_trajectory,
+    trajectory_to_video,
+    save_vectors,
+)
+from TrajectoryNet.lib.viz_scrna import save_trajectory_density
+
+
+# from train_misc import standard_normal_logprob
+from TrajectoryNet.train_misc import (
+    set_cnf_options,
+    count_nfe,
+    count_parameters,
+    count_total_time,
+    add_spectral_norm,
+    spectral_norm_power_iteration,
+    create_regularization_fns,
+    get_regularization,
+    append_regularization_to_log,
+    build_model_tabular,
+)
+
+from TrajectoryNet import dataset
+from TrajectoryNet.parse import parser
+
+matplotlib.use("Agg")
+
+
+def get_transforms(device, args, model, integration_times):
+    """
+    Given a list of integration points,
+    returns a function giving integration times
+    """
+
+    def sample_fn(z, logpz=None):
+        int_list = [
+            torch.tensor([it - args.time_scale, it]).type(torch.float32).to(device)
+            for it in integration_times
+        ]
+        if logpz is not None:
+            # TODO this works right?
+            for it in int_list:
+                z, logpz = model(z, logpz, integration_times=it, reverse=True)
+            return z, logpz
+        else:
+            for it in int_list:
+                z = model(z, integration_times=it, reverse=True)
+            return z
+
+    def density_fn(x, logpx=None):
+        int_list = [
+            torch.tensor([it - args.time_scale, it]).type(torch.float32).to(device)
+            for it in integration_times[::-1]
+        ]
+        if logpx is not None:
+            for it in int_list:
+                x, logpx = model(x, logpx, integration_times=it, reverse=False)
+            return x, logpx
+        else:
+            for it in int_list:
+                x = model(x, integration_times=it, reverse=False)
+            return x
+
+    return sample_fn, density_fn
+
+
+def compute_loss(device, args, model, growth_model, logger, full_data):
+    """
+    Compute loss by integrating backwards from the last time step
+    At each time step integrate back one time step, and concatenate that
+    to samples of the empirical distribution at that previous timestep
+    repeating over and over to calculate the likelihood of samples in
+    later timepoints iteratively, making sure that the ODE is evaluated
+    at every time step to calculate those later points.
+
+    The growth model is a single model of time independent cell growth /
+    death rate defined as a variation from uniform.
+    """
+
+    # Backward pass accumulating losses, previous state and deltas
+    deltas = []
+    zs = []
+    z = None
+    interp_loss = 0.0
+    for i, (itp, tp) in enumerate(zip(args.int_tps[::-1], args.timepoints[::-1])):
+        # tp counts down from last
+        integration_times = torch.tensor([itp - args.time_scale, itp])
+        integration_times = integration_times.type(torch.float32).to(device)
+        # integration_times.requires_grad = True
+
+        # load data and add noise
+        idx = args.data.sample_index(args.batch_size, tp)
+        x = args.data.get_data()[idx]
+        if args.training_noise > 0.0:
+            x += np.random.randn(*x.shape) * args.training_noise
+        x = torch.from_numpy(x).type(torch.float32).to(device)
+
+        if i > 0:
+            x = torch.cat((z, x))
+            zs.append(z)
+        zero = torch.zeros(x.shape[0], 1).to(x)
+
+        # transform to previous timepoint
+        z, delta_logp = model(x, zero, integration_times=integration_times)
+        deltas.append(delta_logp)
+
+        # Straightline regularization
+        # Integrate to random point at time t and assert close to (1 - t) * end + t * start
+        if args.interp_reg:
+            t = np.random.rand()
+            int_t = torch.tensor([itp - t * args.time_scale, itp])
+            int_t = int_t.type(torch.float32).to(device)
+            int_x = model(x, integration_times=int_t)
+            int_x = int_x.detach()
+            actual_int_x = x * (1 - t) + z * t
+            interp_loss += F.mse_loss(int_x, actual_int_x)
+    if args.interp_reg:
+        print("interp_loss", interp_loss)
+
+    logpz = args.data.base_density()(z)
+
+    # build growth rates
+    if args.use_growth:
+        growthrates = [torch.ones_like(logpz)]
+        for z_state, tp in zip(zs[::-1], args.timepoints[:-1]):
+            # Full state includes time parameter to growth_model
+            time_state = tp * torch.ones(z_state.shape[0], 1).to(z_state)
+            full_state = torch.cat([z_state, time_state], 1)
+            growthrates.append(growth_model(full_state))
+
+    # Accumulate losses
+    losses = []
+    logps = [logpz]
+    for i, delta_logp in enumerate(deltas[::-1]):
+        logpx = logps[-1] - delta_logp
+        if args.use_growth:
+            logpx += torch.log(torch.clamp(growthrates[i], 1e-4, 1e4))
+        logps.append(logpx[: -args.batch_size])
+        losses.append(-torch.mean(logpx[-args.batch_size :]))
+    losses = torch.stack(losses)
+    weights = torch.ones_like(losses).to(logpx)
+    if args.leaveout_timepoint >= 0:
+        weights[args.leaveout_timepoint] = 0
+    losses = torch.mean(losses * weights)
+
+    # Direction regularization
+    if args.vecint:
+        similarity_loss = 0
+        for i, (itp, tp) in enumerate(zip(args.int_tps, args.timepoints)):
+            itp = torch.tensor(itp).type(torch.float32).to(device)
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            v = args.data.get_velocity()[idx]
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            v = torch.from_numpy(v).type(torch.float32).to(device)
+            x += torch.randn_like(x) * 0.1
+            # Only penalizes at the time / place of visible samples
+            direction = -model.chain[0].odefunc.odefunc.diffeq(itp, x)
+            if args.use_magnitude:
+                similarity_loss += torch.mean(F.mse_loss(direction, v))
+            else:
+                similarity_loss -= torch.mean(F.cosine_similarity(direction, v))
+        logger.info(similarity_loss)
+        losses += similarity_loss * args.vecint
+
+    # Density regularization
+    if args.top_k_reg > 0:
+        density_loss = 0
+        tp_z_map = dict(zip(args.timepoints[:-1], zs[::-1]))
+        if args.leaveout_timepoint not in tp_z_map:
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            if args.training_noise > 0.0:
+                x += np.random.randn(*x.shape) * args.training_noise
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            t = np.random.rand()
+            int_t = torch.tensor([itp - t * args.time_scale, itp])
+            int_t = int_t.type(torch.float32).to(device)
+            int_x = model(x, integration_times=int_t)
+            samples_05 = int_x
+        else:
+            # If we are leaving out a timepoint the regularize there
+            samples_05 = tp_z_map[args.leaveout_timepoint]
+
+        # Calculate distance to 5 closest neighbors
+        # WARNING: This currently fails in the backward pass with cuda on pytorch < 1.4.0
+        #          works on CPU. Fixed in pytorch 1.5.0
+        # RuntimeError: CUDA error: invalid configuration argument
+        # The workaround is to run on cpu on pytorch <= 1.4.0 or upgrade
+        cdist = torch.cdist(samples_05, full_data)
+        values, _ = torch.topk(cdist, 5, dim=1, largest=False, sorted=False)
+        # Hinge loss
+        hinge_value = 0.1
+        values -= hinge_value
+        values[values < 0] = 0
+        density_loss = torch.mean(values)
+        print("Density Loss", density_loss.item())
+        losses += density_loss * args.top_k_reg
+    losses += interp_loss
+    return losses
+
+
+def train(
+    device, args, model, growth_model, regularization_coeffs, regularization_fns, logger
+):
+    optimizer = optim.Adam(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
+
+    time_meter = utils.RunningAverageMeter(0.93)
+    loss_meter = utils.RunningAverageMeter(0.93)
+    nfef_meter = utils.RunningAverageMeter(0.93)
+    nfeb_meter = utils.RunningAverageMeter(0.93)
+    tt_meter = utils.RunningAverageMeter(0.93)
+
+    full_data = (
+        torch.from_numpy(
+            args.data.get_data()[args.data.get_times() != args.leaveout_timepoint]
+        )
+        .type(torch.float32)
+        .to(device)
+    )
+
+    best_loss = float("inf")
+    if args.use_growth:
+        growth_model.eval()
+    end = time.time()
+    for itr in range(1, args.niters + 1):
+        model.train()
+        optimizer.zero_grad()
+
+        # Train
+        if args.spectral_norm:
+            spectral_norm_power_iteration(model, 1)
+
+        loss = compute_loss(device, args, model, growth_model, logger, full_data)
+        loss_meter.update(loss.item())
+
+        if len(regularization_coeffs) > 0:
+            # Only regularize on the last timepoint
+            reg_states = get_regularization(model, regularization_coeffs)
+            reg_loss = sum(
+                reg_state * coeff
+                for reg_state, coeff in zip(reg_states, regularization_coeffs)
+                if coeff != 0
+            )
+            loss = loss + reg_loss
+        total_time = count_total_time(model)
+        nfe_forward = count_nfe(model)
+
+        loss.backward()
+        optimizer.step()
+
+        # Eval
+        nfe_total = count_nfe(model)
+        nfe_backward = nfe_total - nfe_forward
+        nfef_meter.update(nfe_forward)
+        nfeb_meter.update(nfe_backward)
+        time_meter.update(time.time() - end)
+        tt_meter.update(total_time)
+
+        log_message = (
+            "Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f}) |"
+            " NFE Forward {:.0f}({:.1f})"
+            " | NFE Backward {:.0f}({:.1f})".format(
+                itr,
+                time_meter.val,
+                time_meter.avg,
+                loss_meter.val,
+                loss_meter.avg,
+                nfef_meter.val,
+                nfef_meter.avg,
+                nfeb_meter.val,
+                nfeb_meter.avg,
+            )
+        )
+        if len(regularization_coeffs) > 0:
+            log_message = append_regularization_to_log(
+                log_message, regularization_fns, reg_states
+            )
+        logger.info(log_message)
+
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                train_eval(
+                    device, args, model, growth_model, itr, best_loss, logger, full_data
+                )
+
+        if itr % args.viz_freq == 0:
+            if args.data.get_shape()[0] > 2:
+                logger.warning("Skipping vis as data dimension is >2")
+            else:
+                with torch.no_grad():
+                    visualize(device, args, model, itr)
+        if itr % args.save_freq == 0:
+            chkpt = {
+                "state_dict": model.state_dict(),
+            }
+            if args.use_growth:
+                chkpt.update({"growth_state_dict": growth_model.state_dict()})
+            utils.save_checkpoint(
+                chkpt,
+                args.save,
+                epoch=itr,
+            )
+        end = time.time()
+    logger.info("Training has finished.")
+
+
+def train_eval(device, args, model, growth_model, itr, best_loss, logger, full_data):
+    model.eval()
+    test_loss = compute_loss(device, args, model, growth_model, logger, full_data)
+    test_nfe = count_nfe(model)
+    log_message = "[TEST] Iter {:04d} | Test Loss {:.6f} |" " NFE {:.0f}".format(
+        itr, test_loss, test_nfe
+    )
+    logger.info(log_message)
+    utils.makedirs(args.save)
+    with open(os.path.join(args.save, "train_eval.csv"), "a") as f:
+        import csv
+
+        writer = csv.writer(f)
+        writer.writerow((itr, test_loss))
+
+    if test_loss.item() < best_loss:
+        best_loss = test_loss.item()
+        chkpt = {
+            "state_dict": model.state_dict(),
+        }
+        if args.use_growth:
+            chkpt.update({"growth_state_dict": growth_model.state_dict()})
+        torch.save(
+            chkpt,
+            os.path.join(args.save, "checkpt.pth"),
+        )
+
+
+def visualize(device, args, model, itr):
+    model.eval()
+    for i, tp in enumerate(args.timepoints):
+        idx = args.data.sample_index(args.viz_batch_size, tp)
+        p_samples = args.data.get_data()[idx]
+        sample_fn, density_fn = get_transforms(
+            device, args, model, args.int_tps[: i + 1]
+        )
+        plt.figure(figsize=(9, 3))
+        visualize_transform(
+            p_samples,
+            args.data.base_sample(),
+            args.data.base_density(),
+            transform=sample_fn,
+            inverse_transform=density_fn,
+            samples=True,
+            npts=100,
+            device=device,
+        )
+        fig_filename = os.path.join(
+            args.save, "figs", "{:04d}_{:01d}.jpg".format(itr, i)
+        )
+        utils.makedirs(os.path.dirname(fig_filename))
+        plt.savefig(fig_filename)
+        plt.close()
+
+
+def plot_output(device, args, model):
+    save_traj_dir = os.path.join(args.save, "trajectory")
+    # logger.info('Plotting trajectory to {}'.format(save_traj_dir))
+    data_samples = args.data.get_data()[args.data.sample_index(2000, 0)]
+    np.random.seed(42)
+    start_points = args.data.base_sample()(1000, 2)
+    # idx = args.data.sample_index(50, 0)
+    # start_points = args.data.get_data()[idx]
+    # start_points = torch.from_numpy(start_points).type(torch.float32)
+    save_vectors(
+        args.data.base_density(),
+        model,
+        start_points,
+        args.data.get_data(),
+        args.data.get_times(),
+        args.save,
+        skip_first=(not args.data.known_base_density()),
+        device=device,
+        end_times=args.int_tps,
+        ntimes=100,
+    )
+    save_trajectory(
+        args.data.base_density(),
+        args.data.base_sample(),
+        model,
+        data_samples,
+        save_traj_dir,
+        device=device,
+        end_times=args.int_tps,
+        ntimes=25,
+    )
+    trajectory_to_video(save_traj_dir)
+
+    density_dir = os.path.join(args.save, "density2")
+    save_trajectory_density(
+        args.data.base_density(),
+        model,
+        data_samples,
+        density_dir,
+        device=device,
+        end_times=args.int_tps,
+        ntimes=25,
+        memory=0.1,
+    )
+    trajectory_to_video(density_dir)
+
+
+def main(args):
+    # logger
+    print(args.no_display_loss)
+    utils.makedirs(args.save)
+    logger = utils.get_logger(
+        logpath=os.path.join(args.save, "logs"),
+        filepath=os.path.abspath(__file__),
+        displaying=~args.no_display_loss,
+    )
+
+    if args.layer_type == "blend":
+        logger.info("!! Setting time_scale from None to 1.0 for Blend layers.")
+        args.time_scale = 1.0
+
+    logger.info(args)
+
+    device = torch.device(
+        "cuda:" + str(args.gpu) if torch.cuda.is_available() else "cpu"
+    )
+    if args.use_cpu:
+        device = torch.device("cpu")
+
+    args.data = dataset.SCData.factory(args.dataset, args)
+
+    args.timepoints = args.data.get_unique_times()
+    # Use maximum timepoint to establish integration_times
+    # as some timepoints may be left out for validation etc.
+    args.int_tps = (np.arange(max(args.timepoints) + 1) + 1.0) * args.time_scale
+
+    regularization_fns, regularization_coeffs = create_regularization_fns(args)
+    model = build_model_tabular(args, args.data.get_shape()[0], regularization_fns).to(
+        device
+    )
+    growth_model = None
+    if args.use_growth:
+        if args.leaveout_timepoint == -1:
+            growth_model_path = "../data/externel/growth_model_v2.ckpt"
+        elif args.leaveout_timepoint in [1, 2, 3]:
+            assert args.max_dim == 5
+            growth_model_path = "../data/growth/model_%d" % args.leaveout_timepoint
+        else:
+            print("WARNING: Cannot use growth with this timepoint")
+
+        growth_model = torch.load(growth_model_path, map_location=device)
+    if args.spectral_norm:
+        add_spectral_norm(model)
+    set_cnf_options(args, model)
+
+    if args.test:
+        state_dict = torch.load(args.save + "/checkpt.pth", map_location=device)
+        model.load_state_dict(state_dict["state_dict"])
+        # if "growth_state_dict" not in state_dict:
+        #    print("error growth model note in save")
+        #    growth_model = None
+        # else:
+        #    checkpt = torch.load(args.save + "/checkpt.pth", map_location=device)
+        #    growth_model.load_state_dict(checkpt["growth_state_dict"])
+        # TODO can we load the arguments from the save?
+        # eval_utils.generate_samples(
+        #    device, args, model, growth_model, timepoint=args.leaveout_timepoint
+        # )
+        # with torch.no_grad():
+        #    evaluate(device, args, model, growth_model)
+    #    exit()
+    else:
+        logger.info(model)
+        n_param = count_parameters(model)
+        logger.info("Number of trainable parameters: {}".format(n_param))
+
+        train(
+            device,
+            args,
+            model,
+            growth_model,
+            regularization_coeffs,
+            regularization_fns,
+            logger,
+        )
+
+    if args.data.data.shape[1] == 2:
+        plot_output(device, args, model)
+
+
+if __name__ == "__main__":
+
+    args = parser.parse_args()
+    main(args)
+
+Namespace(test=False, dataset='/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input.h5ad', use_growth=False, use_density=False, leaveout_timepoint=-1, layer_type='concatsquash', max_dim=10, dims='64-64-64', num_blocks=1, time_scale=0.5, train_T=True, divergence_fn='brute_force', nonlinearity='tanh', stochastic=False, alpha=0.0, solver='dopri5', atol=1e-05, rtol=1e-05, step_size=None, test_solver=None, test_atol=None, test_rtol=None, residual=False, rademacher=False, spectral_norm=False, batch_norm=False, bn_lag=0, niters=10000, num_workers=16, batch_size=5000, test_batch_size=1000, viz_batch_size=2000, lr=0.001, weight_decay=1e-05, l1int=None, l2int=None, sl2int=None, dl2int=None, dtl2int=None, JFrobint=None, JdiagFrobint=None, JoffdiagFrobint=None, vecint=0.0001, use_magnitude=False, interp_reg=None, save='/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/pca10', save_freq=1000, viz_freq=100, viz_freq_growth=100, val_freq=100, log_freq=10, gpu=0, use_cpu=False, no_display_loss=True, top_k_reg=0.0, training_noise=0.1, embedding_name='pca', whiten=False)
+SequentialFlow(
+  (chain): ModuleList(
+    (0): CNF(
+      (odefunc): RegularizedODEfunc(
+        (odefunc): ODEfunc(
+          (diffeq): ODEnet(
+            (layers): ModuleList(
+              (0): ConcatSquashLinear(
+                (_layer): Linear(in_features=10, out_features=64, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=64, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=64, bias=True)
+              )
+              (1-2): 2 x ConcatSquashLinear(
+                (_layer): Linear(in_features=64, out_features=64, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=64, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=64, bias=True)
+              )
+              (3): ConcatSquashLinear(
+                (_layer): Linear(in_features=64, out_features=10, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=10, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=10, bias=True)
+              )
+            )
+            (activation_fns): ModuleList(
+              (0-2): 3 x Tanh()
+            )
+          )
+        )
+      )
+    )
+  )
+)
+Number of trainable parameters: 10281
+tensor(1.5066, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0001 | Time 4.0669(4.0669) | Loss 5861498.000000(5861498.000000) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5265, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0002 | Time 2.5368(3.9598) | Loss 5833306.000000(5859524.560000) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5023, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0003 | Time 2.5433(3.8606) | Loss 5841451.500000(5858259.445800) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5399, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0004 | Time 2.4896(3.7647) | Loss 5849419.500000(5857640.649594) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5526, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0005 | Time 2.4638(3.6736) | Loss 5820840.000000(5855064.604122) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5441, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0006 | Time 2.4878(3.5906) | Loss 5859824.000000(5855397.761834) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5544, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0007 | Time 2.4927(3.5137) | Loss 5819946.000000(5852916.138505) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5793, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0008 | Time 2.4539(3.4395) | Loss 5856245.500000(5853149.193810) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5805, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0009 | Time 2.4579(3.3708) | Loss 5843051.000000(5852442.320243) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5715, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0010 | Time 2.4503(3.3064) | Loss 5862691.000000(5853159.727826) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5782, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0011 | Time 2.4526(3.2466) | Loss 5799595.500000(5849410.231879) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5857, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0012 | Time 2.4874(3.1935) | Loss 5860653.500000(5850197.260647) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5829, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0013 | Time 2.5352(3.1474) | Loss 5852939.000000(5850389.182402) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5880, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0014 | Time 2.5276(3.1040) | Loss 5829468.000000(5848924.699634) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5837, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0015 | Time 2.5610(3.0660) | Loss 5846414.000000(5848748.950659) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5925, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0016 | Time 2.5685(3.0312) | Loss 5866869.000000(5850017.354113) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6152, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0017 | Time 2.5639(2.9985) | Loss 5819718.000000(5847896.399325) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6035, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0018 | Time 2.5274(2.9655) | Loss 5823069.500000(5846158.516372) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6177, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0019 | Time 2.6940(2.9465) | Loss 5857524.000000(5846954.100226) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6086, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0020 | Time 2.5380(2.9179) | Loss 5859414.000000(5847826.293211) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6228, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0021 | Time 2.5528(2.8923) | Loss 5837332.000000(5847091.692686) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6296, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0022 | Time 2.5419(2.8678) | Loss 5844225.500000(5846891.059198) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6285, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0023 | Time 2.5348(2.8445) | Loss 5837969.000000(5846266.515054) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6318, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0024 | Time 2.7569(2.8384) | Loss 5875941.000000(5848343.729000) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6162, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0025 | Time 2.5426(2.8177) | Loss 5825855.000000(5846769.517970) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6434, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0026 | Time 2.4495(2.7919) | Loss 5859351.500000(5847650.256712) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6435, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0027 | Time 2.3582(2.7615) | Loss 5851017.500000(5847885.963742) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6397, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0028 | Time 2.5089(2.7438) | Loss 5835411.000000(5847012.716280) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6529, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0029 | Time 2.5038(2.7270) | Loss 5838647.000000(5846427.116141) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6588, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0030 | Time 2.4099(2.7048) | Loss 5823079.500000(5844792.783011) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6484, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0031 | Time 2.4139(2.6845) | Loss 5884855.000000(5847597.138200) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6503, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0032 | Time 2.4281(2.6665) | Loss 5849513.500000(5847731.283526) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6644, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0033 | Time 2.4156(2.6490) | Loss 5829959.000000(5846487.223679) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6713, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0034 | Time 2.9255(2.6683) | Loss 5838591.500000(5845934.523022) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6486, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0035 | Time 2.4871(2.6556) | Loss 5879465.000000(5848281.656410) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6473, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0036 | Time 2.4247(2.6395) | Loss 5843647.500000(5847957.265462) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6660, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0037 | Time 2.4323(2.6250) | Loss 5796930.000000(5844385.356879) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6540, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0038 | Time 2.4154(2.6103) | Loss 5847327.000000(5844591.271898) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6388, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0039 | Time 2.4130(2.5965) | Loss 5807481.000000(5841993.552865) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6444, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0040 | Time 2.4123(2.5836) | Loss 5841179.000000(5841936.534164) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6449, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0041 | Time 2.9245(2.6075) | Loss 5850287.000000(5842521.066773) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6465, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0042 | Time 2.9291(2.6300) | Loss 5826939.000000(5841430.322099) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6303, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0043 | Time 2.5068(2.6214) | Loss 5862085.500000(5842876.184552) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6270, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0044 | Time 2.3575(2.6029) | Loss 5818333.000000(5841158.161633) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6249, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0045 | Time 2.5115(2.5965) | Loss 5804063.000000(5838561.500319) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6237, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0046 | Time 2.9235(2.6194) | Loss 5822443.000000(5837433.205297) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6290, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0047 | Time 2.9536(2.6428) | Loss 5849767.500000(5838296.605926) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6233, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0048 | Time 3.0292(2.6698) | Loss 5818869.500000(5836936.708511) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6093, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0049 | Time 2.5532(2.6617) | Loss 5873459.000000(5839493.268915) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6282, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0050 | Time 2.4597(2.6475) | Loss 5816313.500000(5837870.685091) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6173, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0051 | Time 2.4557(2.6341) | Loss 5849338.000000(5838673.397135) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6114, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0052 | Time 2.4556(2.6216) | Loss 5834629.500000(5838390.324335) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5948, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0053 | Time 2.4569(2.6101) | Loss 5838723.000000(5838413.611632) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.6051, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0054 | Time 2.4571(2.5993) | Loss 5839527.500000(5838491.583818) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5826, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0055 | Time 2.4640(2.5899) | Loss 5867354.000000(5840511.952950) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5785, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0056 | Time 2.4646(2.5811) | Loss 5801881.000000(5837807.786244) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5746, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0057 | Time 2.4609(2.5727) | Loss 5869072.000000(5839996.281207) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5508, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0058 | Time 2.4566(2.5646) | Loss 5834995.500000(5839646.226522) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5648, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0059 | Time 2.4593(2.5572) | Loss 5806229.500000(5837307.055666) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5479, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0060 | Time 2.4587(2.5503) | Loss 5825164.000000(5836457.041769) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5647, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0061 | Time 2.4561(2.5437) | Loss 5829720.000000(5835985.448845) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5497, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0062 | Time 2.4545(2.5375) | Loss 5835473.500000(5835949.612426) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5335, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0063 | Time 2.4558(2.5317) | Loss 5820597.500000(5834874.964556) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5245, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0064 | Time 2.4878(2.5287) | Loss 5792609.500000(5831916.382037) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5283, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0065 | Time 2.4466(2.5229) | Loss 5826364.000000(5831527.715295) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5250, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0066 | Time 2.4437(2.5174) | Loss 5839419.000000(5832080.105224) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5197, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0067 | Time 2.4381(2.5118) | Loss 5828528.000000(5831831.457858) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.5121, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0068 | Time 2.4427(2.5070) | Loss 5837879.500000(5832254.820808) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4959, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0069 | Time 2.4385(2.5022) | Loss 5832308.000000(5832258.543352) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4930, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0070 | Time 2.4373(2.4977) | Loss 5853144.000000(5833720.525317) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4998, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0071 | Time 2.4426(2.4938) | Loss 5780789.000000(5830015.318545) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4703, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0072 | Time 2.3604(2.4845) | Loss 5824749.500000(5829646.711247) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4780, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0073 | Time 2.3639(2.4760) | Loss 5822057.000000(5829115.431460) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4623, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0074 | Time 2.4399(2.4735) | Loss 5769861.500000(5824967.656257) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4635, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0075 | Time 2.4242(2.4700) | Loss 5823951.000000(5824896.490319) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.4528, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0076 | Time 2.5476(2.4755) | Loss 5853037.500000(5826866.360997) | NFE Forward 14(14.0) | NFE Backward 132(126.4)
+tensor(1.4426, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0077 | Time 2.4800(2.4758) | Loss 5808733.500000(5825597.060727) | NFE Forward 14(14.0) | NFE Backward 126(126.4)
+tensor(1.4268, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0078 | Time 2.3870(2.4696) | Loss 5833156.000000(5826126.186476) | NFE Forward 14(14.0) | NFE Backward 126(126.4)
+tensor(1.4411, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0079 | Time 2.4519(2.4683) | Loss 5792008.000000(5823737.913423) | NFE Forward 14(14.0) | NFE Backward 126(126.3)
+tensor(1.4137, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0080 | Time 2.4581(2.4676) | Loss 5872494.000000(5827150.839483) | NFE Forward 14(14.0) | NFE Backward 126(126.3)
+tensor(1.4147, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0081 | Time 2.4750(2.4681) | Loss 5806936.000000(5825735.800720) | NFE Forward 14(14.0) | NFE Backward 126(126.3)
+tensor(1.4164, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0082 | Time 2.4467(2.4666) | Loss 5799439.000000(5823895.024669) | NFE Forward 14(14.0) | NFE Backward 126(126.3)
+tensor(1.4170, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0083 | Time 2.4480(2.4653) | Loss 5831907.500000(5824455.897942) | NFE Forward 14(14.0) | NFE Backward 126(126.3)
+tensor(1.4164, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0084 | Time 2.4510(2.4643) | Loss 5812625.000000(5823627.735086) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3849, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0085 | Time 2.4473(2.4631) | Loss 5823167.500000(5823595.518630) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3805, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0086 | Time 2.4491(2.4621) | Loss 5861432.000000(5826244.072326) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3908, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0087 | Time 2.8807(2.4914) | Loss 5788553.000000(5823605.697263) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3582, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0088 | Time 3.0682(2.5318) | Loss 5791826.000000(5821381.118455) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3774, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0089 | Time 3.0298(2.5667) | Loss 5854569.500000(5823704.305163) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3610, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0090 | Time 3.0284(2.5990) | Loss 5773511.000000(5820190.773802) | NFE Forward 14(14.0) | NFE Backward 126(126.2)
+tensor(1.3658, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0091 | Time 3.0322(2.6293) | Loss 5840309.000000(5821599.049636) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3695, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0092 | Time 3.0322(2.6575) | Loss 5777505.500000(5818512.501161) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3591, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0093 | Time 2.4600(2.6437) | Loss 5875573.500000(5822506.771080) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3319, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0094 | Time 2.5224(2.6352) | Loss 5848333.500000(5824314.642104) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3464, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0095 | Time 2.5095(2.6264) | Loss 5831735.000000(5824834.067157) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3406, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0096 | Time 2.9306(2.6477) | Loss 5855781.500000(5827000.387456) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3248, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0097 | Time 2.8752(2.6636) | Loss 5817775.000000(5826354.610334) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3380, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0098 | Time 2.5851(2.6581) | Loss 5835708.000000(5827009.347611) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3265, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0099 | Time 2.5157(2.6482) | Loss 5814050.000000(5826102.193278) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3102, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0100 | Time 2.4758(2.6361) | Loss 5817617.500000(5825508.264748) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3252, device='cuda:0')
+[TEST] Iter 0100 | Test Loss 5824811.000000 | NFE 14
+Skipping vis as data dimension is >2
+tensor(1.3085, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0101 | Time 2.4856(2.6256) | Loss 5828207.000000(5825697.176216) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.2946, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0102 | Time 2.4871(2.6159) | Loss 5816448.000000(5825049.733881) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3092, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0103 | Time 2.5486(2.6112) | Loss 5793327.500000(5822829.177509) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.2993, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0104 | Time 2.6368(2.6129) | Loss 5813167.000000(5822152.825084) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.3001, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0105 | Time 2.5633(2.6095) | Loss 5800510.000000(5820637.827328) | NFE Forward 14(14.0) | NFE Backward 126(126.1)
+tensor(1.2920, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0106 | Time 2.4517(2.5984) | Loss 5868243.000000(5823970.189415) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.3149, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0107 | Time 2.4510(2.5881) | Loss 5850139.000000(5825802.006156) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.2811, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0108 | Time 2.5625(2.5863) | Loss 5814245.500000(5824993.050725) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.2845, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0109 | Time 2.6114(2.5881) | Loss 5800829.500000(5823301.602174) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.2607, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0110 | Time 2.5801(2.5875) | Loss 5810447.500000(5822401.815022) | NFE Forward 14(14.0) | NFE Backward 126(126.0)
+tensor(1.2899, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0111 | Time 2.6467(2.5917) | Loss 5813965.000000(5821811.237970) | NFE Forward 20(14.4) | NFE Backward 126(126.0)
+tensor(1.2604, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0112 | Time 2.5945(2.5919) | Loss 5790124.000000(5819593.131312) | NFE Forward 14(14.4) | NFE Backward 126(126.0)
+tensor(1.2623, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0113 | Time 2.6048(2.5928) | Loss 5830451.500000(5820353.217121) | NFE Forward 20(14.8) | NFE Backward 126(126.0)
+tensor(1.2698, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0114 | Time 2.6759(2.5986) | Loss 5758922.000000(5816053.031922) | NFE Forward 20(15.1) | NFE Backward 126(126.0)
+tensor(1.2651, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0115 | Time 2.5610(2.5960) | Loss 5807301.500000(5815440.424688) | NFE Forward 20(15.5) | NFE Backward 126(126.0)
+tensor(1.2527, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0116 | Time 2.5754(2.5945) | Loss 5816199.000000(5815493.524959) | NFE Forward 20(15.8) | NFE Backward 126(126.0)
+tensor(1.2484, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0117 | Time 2.6403(2.5977) | Loss 5803307.000000(5814640.468212) | NFE Forward 20(16.1) | NFE Backward 126(126.0)
+tensor(1.2555, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0118 | Time 2.7144(2.6059) | Loss 5799681.500000(5813593.340437) | NFE Forward 20(16.4) | NFE Backward 126(126.0)
+tensor(1.2396, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0119 | Time 2.6804(2.6111) | Loss 5835537.500000(5815129.431607) | NFE Forward 20(16.6) | NFE Backward 126(126.0)
+tensor(1.2730, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0120 | Time 2.6646(2.6149) | Loss 5792616.000000(5813553.491394) | NFE Forward 20(16.9) | NFE Backward 126(126.0)
+tensor(1.2604, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0121 | Time 2.6629(2.6182) | Loss 5782971.500000(5811412.751997) | NFE Forward 20(17.1) | NFE Backward 126(126.0)
+tensor(1.2371, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0122 | Time 2.6521(2.6206) | Loss 5779680.000000(5809191.459357) | NFE Forward 20(17.3) | NFE Backward 126(126.0)
+tensor(1.2285, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0123 | Time 2.6524(2.6228) | Loss 5805121.000000(5808906.527202) | NFE Forward 20(17.5) | NFE Backward 126(126.0)
+tensor(1.2375, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0124 | Time 2.6088(2.6218) | Loss 5792211.500000(5807737.875298) | NFE Forward 20(17.7) | NFE Backward 126(126.0)
+tensor(1.2264, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0125 | Time 2.6615(2.6246) | Loss 5815681.500000(5808293.929027) | NFE Forward 20(17.8) | NFE Backward 126(126.0)
+tensor(1.2294, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0126 | Time 2.6644(2.6274) | Loss 5828229.500000(5809689.418995) | NFE Forward 20(18.0) | NFE Backward 126(126.0)
+tensor(1.2487, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0127 | Time 2.6991(2.6324) | Loss 5837907.000000(5811664.649665) | NFE Forward 20(18.1) | NFE Backward 126(126.0)
+tensor(1.2015, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0128 | Time 2.7326(2.6394) | Loss 5791733.500000(5810269.469189) | NFE Forward 26(18.7) | NFE Backward 126(126.0)
+tensor(1.2159, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0129 | Time 2.6445(2.6398) | Loss 5832085.500000(5811796.591346) | NFE Forward 20(18.8) | NFE Backward 126(126.0)
+tensor(1.2208, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0130 | Time 2.7613(2.6483) | Loss 5775688.000000(5809268.989951) | NFE Forward 20(18.8) | NFE Backward 126(126.0)
+tensor(1.2283, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0131 | Time 2.7156(2.6530) | Loss 5803695.500000(5808878.845655) | NFE Forward 20(18.9) | NFE Backward 126(126.0)
+tensor(1.2283, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0132 | Time 2.7301(2.6584) | Loss 5804578.000000(5808577.786459) | NFE Forward 20(19.0) | NFE Backward 126(126.0)
+tensor(1.2184, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0133 | Time 2.7619(2.6656) | Loss 5753880.000000(5804748.941407) | NFE Forward 20(19.1) | NFE Backward 126(126.0)
+tensor(1.2079, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0134 | Time 2.7585(2.6721) | Loss 5787411.000000(5803535.285508) | NFE Forward 20(19.1) | NFE Backward 126(126.0)
+tensor(1.2140, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0135 | Time 2.7394(2.6768) | Loss 5797143.500000(5803087.860523) | NFE Forward 20(19.2) | NFE Backward 126(126.0)
+tensor(1.2100, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0136 | Time 2.7961(2.6852) | Loss 5823253.500000(5804499.455286) | NFE Forward 20(19.3) | NFE Backward 126(126.0)
+tensor(1.1999, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0137 | Time 2.7747(2.6915) | Loss 5827596.000000(5806116.213416) | NFE Forward 20(19.3) | NFE Backward 126(126.0)
+tensor(1.2127, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0138 | Time 2.7805(2.6977) | Loss 5771213.500000(5803673.023477) | NFE Forward 20(19.4) | NFE Backward 126(126.0)
+tensor(1.1926, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0139 | Time 2.8103(2.7056) | Loss 5818098.000000(5804682.771834) | NFE Forward 20(19.4) | NFE Backward 126(126.0)
+tensor(1.1970, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0140 | Time 2.8756(2.7175) | Loss 5838536.000000(5807052.497805) | NFE Forward 20(19.4) | NFE Backward 126(126.0)
+tensor(1.1892, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0141 | Time 2.6211(2.7107) | Loss 5821825.500000(5808086.607959) | NFE Forward 20(19.5) | NFE Backward 126(126.0)
+tensor(1.2083, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0142 | Time 2.7843(2.7159) | Loss 5806083.000000(5807946.355402) | NFE Forward 20(19.5) | NFE Backward 126(126.0)
+tensor(1.1693, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0143 | Time 2.6958(2.7145) | Loss 5819934.000000(5808785.490524) | NFE Forward 20(19.6) | NFE Backward 126(126.0)
+tensor(1.1701, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0144 | Time 2.6772(2.7119) | Loss 5757775.500000(5805214.791187) | NFE Forward 20(19.6) | NFE Backward 126(126.0)
+tensor(1.1716, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0145 | Time 2.6444(2.7071) | Loss 5785760.000000(5803852.955804) | NFE Forward 20(19.6) | NFE Backward 126(126.0)
+tensor(1.1682, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0146 | Time 2.6574(2.7037) | Loss 5769822.000000(5801470.788898) | NFE Forward 20(19.6) | NFE Backward 126(126.0)
+tensor(1.1786, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0147 | Time 2.6801(2.7020) | Loss 5786112.000000(5800395.673675) | NFE Forward 20(19.7) | NFE Backward 126(126.0)
+tensor(1.1721, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0148 | Time 2.7930(2.7084) | Loss 5794647.000000(5799993.266518) | NFE Forward 20(19.7) | NFE Backward 126(126.0)
+tensor(1.1697, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0149 | Time 2.8302(2.7169) | Loss 5816163.000000(5801125.147861) | NFE Forward 20(19.7) | NFE Backward 126(126.0)
+tensor(1.1860, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0150 | Time 2.8374(2.7253) | Loss 5774323.500000(5799249.032511) | NFE Forward 20(19.7) | NFE Backward 126(126.0)
+tensor(1.1529, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0151 | Time 2.8008(2.7306) | Loss 5822273.500000(5800860.745235) | NFE Forward 20(19.7) | NFE Backward 126(126.0)
+tensor(1.1867, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0152 | Time 2.6653(2.7260) | Loss 5792920.000000(5800304.893069) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1698, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0153 | Time 2.7296(2.7263) | Loss 5833859.000000(5802653.680554) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1645, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0154 | Time 2.7599(2.7286) | Loss 5787068.000000(5801562.682915) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1559, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0155 | Time 2.7540(2.7304) | Loss 5779533.500000(5800020.640111) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1638, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0156 | Time 2.7531(2.7320) | Loss 5763047.000000(5797432.485303) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1462, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0157 | Time 2.7524(2.7334) | Loss 5767501.500000(5795337.316332) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1476, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0158 | Time 2.7226(2.7327) | Loss 5770761.500000(5793617.009189) | NFE Forward 20(19.8) | NFE Backward 126(126.0)
+tensor(1.1525, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0159 | Time 2.8397(2.7402) | Loss 5721452.000000(5788565.458546) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1490, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0160 | Time 2.8024(2.7445) | Loss 5798476.000000(5789259.196447) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1488, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0161 | Time 2.6577(2.7385) | Loss 5773475.000000(5788154.302696) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1508, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0162 | Time 2.8216(2.7443) | Loss 5811771.000000(5789807.471507) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1265, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0163 | Time 2.8338(2.7505) | Loss 5810732.000000(5791272.188502) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1451, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0164 | Time 2.7707(2.7520) | Loss 5809815.000000(5792570.185307) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1528, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0165 | Time 2.8289(2.7573) | Loss 5816473.000000(5794243.382335) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1323, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0166 | Time 2.7674(2.7580) | Loss 5787155.000000(5793747.195572) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1557, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0167 | Time 2.7648(2.7585) | Loss 5803431.000000(5794425.061882) | NFE Forward 20(19.9) | NFE Backward 126(126.0)
+tensor(1.1399, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0168 | Time 2.8097(2.7621) | Loss 5785632.000000(5793809.547550) | NFE Forward 26(20.3) | NFE Backward 126(126.0)
+tensor(1.1250, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0169 | Time 2.8083(2.7653) | Loss 5785654.000000(5793238.659222) | NFE Forward 26(20.7) | NFE Backward 126(126.0)
+tensor(1.1401, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0170 | Time 2.8568(2.7717) | Loss 5794913.000000(5793355.863076) | NFE Forward 26(21.1) | NFE Backward 126(126.0)
+tensor(1.1270, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0171 | Time 2.6826(2.7655) | Loss 5825695.000000(5795619.602661) | NFE Forward 20(21.0) | NFE Backward 126(126.0)
+tensor(1.1367, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0172 | Time 2.6813(2.7596) | Loss 5759655.500000(5793102.115474) | NFE Forward 20(21.0) | NFE Backward 126(126.0)
+tensor(1.1212, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0173 | Time 2.8434(2.7655) | Loss 5831547.000000(5795793.257391) | NFE Forward 20(20.9) | NFE Backward 126(126.0)
+tensor(1.1373, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0174 | Time 2.8596(2.7721) | Loss 5787091.000000(5795184.099374) | NFE Forward 20(20.8) | NFE Backward 126(126.0)
+tensor(1.1162, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0175 | Time 2.8810(2.7797) | Loss 5750702.000000(5792070.352418) | NFE Forward 20(20.8) | NFE Backward 126(126.0)
+tensor(1.1216, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0176 | Time 2.8704(2.7860) | Loss 5809396.000000(5793283.147748) | NFE Forward 20(20.7) | NFE Backward 126(126.0)
+tensor(1.1263, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0177 | Time 2.8720(2.7921) | Loss 5785581.500000(5792744.032406) | NFE Forward 20(20.7) | NFE Backward 126(126.0)
+tensor(1.1195, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0178 | Time 2.8430(2.7956) | Loss 5797453.500000(5793073.695138) | NFE Forward 20(20.6) | NFE Backward 126(126.0)
+tensor(1.1274, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0179 | Time 2.8141(2.7969) | Loss 5788909.500000(5792782.201478) | NFE Forward 20(20.6) | NFE Backward 126(126.0)
+tensor(1.1190, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0180 | Time 2.7542(2.7939) | Loss 5767105.500000(5790984.832375) | NFE Forward 20(20.5) | NFE Backward 126(126.0)
+tensor(1.1233, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0181 | Time 2.9108(2.8021) | Loss 5791108.000000(5790993.454108) | NFE Forward 20(20.5) | NFE Backward 132(126.4)
+tensor(1.1252, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0182 | Time 2.8931(2.8085) | Loss 5816996.000000(5792813.632321) | NFE Forward 20(20.5) | NFE Backward 132(126.8)
+tensor(1.1196, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0183 | Time 2.8867(2.8140) | Loss 5765984.000000(5790935.558058) | NFE Forward 20(20.4) | NFE Backward 132(127.2)
+tensor(1.1124, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0184 | Time 2.8683(2.8178) | Loss 5788598.000000(5790771.928994) | NFE Forward 20(20.4) | NFE Backward 132(127.5)
+tensor(1.1144, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0185 | Time 3.0040(2.8308) | Loss 5791685.500000(5790835.878965) | NFE Forward 20(20.4) | NFE Backward 138(128.2)
+tensor(1.1179, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0186 | Time 2.8976(2.8355) | Loss 5768528.000000(5789274.327437) | NFE Forward 20(20.3) | NFE Backward 126(128.1)
+tensor(1.1215, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0187 | Time 3.1562(2.8579) | Loss 5787103.000000(5789122.334517) | NFE Forward 20(20.3) | NFE Backward 144(129.2)
+tensor(1.1060, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0188 | Time 2.8774(2.8593) | Loss 5768779.500000(5787698.336100) | NFE Forward 20(20.3) | NFE Backward 132(129.4)
+tensor(1.1028, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0189 | Time 2.8967(2.8619) | Loss 5759633.000000(5785733.762573) | NFE Forward 20(20.3) | NFE Backward 126(129.2)
+tensor(1.1149, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0190 | Time 3.0312(2.8738) | Loss 5819743.000000(5788114.409193) | NFE Forward 26(20.7) | NFE Backward 138(129.8)
+tensor(1.1071, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0191 | Time 2.8778(2.8740) | Loss 5765017.500000(5786497.625550) | NFE Forward 26(21.1) | NFE Backward 132(129.9)
+tensor(1.1103, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0192 | Time 3.0681(2.8876) | Loss 5760625.500000(5784686.576761) | NFE Forward 20(21.0) | NFE Backward 144(130.9)
+tensor(1.1007, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0193 | Time 3.0066(2.8960) | Loss 5795272.000000(5785427.556388) | NFE Forward 20(20.9) | NFE Backward 138(131.4)
+tensor(1.1012, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0194 | Time 2.9179(2.8975) | Loss 5760148.000000(5783657.987441) | NFE Forward 20(20.8) | NFE Backward 138(131.9)
+tensor(1.1185, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0195 | Time 3.0179(2.9059) | Loss 5807605.500000(5785334.313320) | NFE Forward 20(20.8) | NFE Backward 144(132.7)
+tensor(1.1124, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0196 | Time 2.9952(2.9122) | Loss 5770369.500000(5784286.776388) | NFE Forward 20(20.7) | NFE Backward 138(133.1)
+tensor(1.1128, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0197 | Time 3.1352(2.9278) | Loss 5774215.500000(5783581.787040) | NFE Forward 26(21.1) | NFE Backward 144(133.9)
+tensor(1.0951, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0198 | Time 3.0921(2.9393) | Loss 5811953.500000(5785567.806948) | NFE Forward 26(21.4) | NFE Backward 144(134.6)
+tensor(1.0965, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0199 | Time 3.0629(2.9479) | Loss 5807423.000000(5787097.670461) | NFE Forward 20(21.3) | NFE Backward 138(134.8)
+tensor(1.1065, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0200 | Time 3.1207(2.9600) | Loss 5805629.000000(5788394.863529) | NFE Forward 20(21.2) | NFE Backward 144(135.5)
+tensor(1.0992, device='cuda:0')
+[TEST] Iter 0200 | Test Loss 5793300.000000 | NFE 20
+Skipping vis as data dimension is >2
+tensor(1.0991, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0201 | Time 3.2295(2.9789) | Loss 5803317.000000(5789439.413082) | NFE Forward 20(21.2) | NFE Backward 144(136.0)
+tensor(1.1092, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0202 | Time 3.1898(2.9936) | Loss 5810699.500000(5790927.619166) | NFE Forward 20(21.1) | NFE Backward 150(137.0)
+tensor(1.0936, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0203 | Time 3.1053(3.0015) | Loss 5750180.000000(5788075.285825) | NFE Forward 20(21.0) | NFE Backward 144(137.5)
+tensor(1.1091, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0204 | Time 3.2938(3.0219) | Loss 5771870.000000(5786940.915817) | NFE Forward 20(20.9) | NFE Backward 156(138.8)
+tensor(1.0940, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0205 | Time 3.2373(3.0370) | Loss 5741453.500000(5783756.796710) | NFE Forward 20(20.9) | NFE Backward 150(139.6)
+tensor(1.0889, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0206 | Time 3.3588(3.0595) | Loss 5792688.000000(5784381.980940) | NFE Forward 20(20.8) | NFE Backward 162(141.2)
+tensor(1.1083, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0207 | Time 3.2741(3.0745) | Loss 5781695.000000(5784193.892274) | NFE Forward 20(20.8) | NFE Backward 156(142.2)
+tensor(1.1012, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0208 | Time 3.2904(3.0897) | Loss 5713635.000000(5779254.769815) | NFE Forward 20(20.7) | NFE Backward 162(143.6)
+tensor(1.0764, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0209 | Time 3.2461(3.1006) | Loss 5809953.000000(5781403.645928) | NFE Forward 20(20.6) | NFE Backward 156(144.5)
+tensor(1.1067, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0210 | Time 3.2589(3.1117) | Loss 5771178.000000(5780687.850713) | NFE Forward 20(20.6) | NFE Backward 156(145.3)
+tensor(1.0873, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0211 | Time 3.2849(3.1238) | Loss 5758907.000000(5779163.191163) | NFE Forward 20(20.6) | NFE Backward 156(146.0)
+tensor(1.0979, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0212 | Time 3.1135(3.1231) | Loss 5791481.000000(5780025.437782) | NFE Forward 20(20.5) | NFE Backward 150(146.3)
+tensor(1.0910, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0213 | Time 3.1374(3.1241) | Loss 5771725.000000(5779444.407137) | NFE Forward 20(20.5) | NFE Backward 150(146.6)
+tensor(1.0746, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0214 | Time 3.3052(3.1368) | Loss 5761654.000000(5778199.078637) | NFE Forward 20(20.5) | NFE Backward 156(147.2)
+tensor(1.0712, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0215 | Time 3.3466(3.1515) | Loss 5782845.500000(5778524.328133) | NFE Forward 20(20.4) | NFE Backward 168(148.7)
+tensor(1.0837, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0216 | Time 3.1429(3.1509) | Loss 5763108.000000(5777445.185163) | NFE Forward 20(20.4) | NFE Backward 156(149.2)
+tensor(1.0892, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0217 | Time 3.1870(3.1534) | Loss 5816030.000000(5780146.122202) | NFE Forward 20(20.4) | NFE Backward 156(149.7)
+tensor(1.0909, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0218 | Time 3.1382(3.1523) | Loss 5761934.000000(5778871.273648) | NFE Forward 20(20.3) | NFE Backward 156(150.1)
+tensor(1.0954, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0219 | Time 3.1736(3.1538) | Loss 5754944.000000(5777196.364493) | NFE Forward 20(20.3) | NFE Backward 156(150.5)
+tensor(1.0846, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0220 | Time 3.3354(3.1665) | Loss 5785491.000000(5777776.988978) | NFE Forward 20(20.3) | NFE Backward 168(151.7)
+tensor(1.0854, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0221 | Time 3.2565(3.1728) | Loss 5788135.500000(5778502.084750) | NFE Forward 20(20.3) | NFE Backward 162(152.5)
+tensor(1.0717, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0222 | Time 3.3633(3.1862) | Loss 5771381.000000(5778003.608817) | NFE Forward 20(20.3) | NFE Backward 168(153.5)
+tensor(1.0883, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0223 | Time 3.1235(3.1818) | Loss 5729961.500000(5774640.661200) | NFE Forward 20(20.2) | NFE Backward 156(153.7)
+tensor(1.1010, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0224 | Time 3.1216(3.1776) | Loss 5793413.500000(5775954.759916) | NFE Forward 20(20.2) | NFE Backward 156(153.9)
+tensor(1.0893, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0225 | Time 3.3088(3.1867) | Loss 5790743.000000(5776989.936722) | NFE Forward 20(20.2) | NFE Backward 168(154.9)
+tensor(1.0962, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0226 | Time 3.1962(3.1874) | Loss 5736504.000000(5774155.921151) | NFE Forward 20(20.2) | NFE Backward 156(154.9)
+tensor(1.0911, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0227 | Time 3.2402(3.1911) | Loss 5730431.000000(5771095.176671) | NFE Forward 20(20.2) | NFE Backward 162(155.4)
+tensor(1.0976, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0228 | Time 3.1582(3.1888) | Loss 5772491.500000(5771192.919304) | NFE Forward 20(20.2) | NFE Backward 156(155.5)
+tensor(1.0799, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0229 | Time 3.1225(3.1842) | Loss 5750447.500000(5769740.739952) | NFE Forward 20(20.2) | NFE Backward 156(155.5)
+tensor(1.0781, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0230 | Time 3.2069(3.1858) | Loss 5757397.500000(5768876.713156) | NFE Forward 20(20.1) | NFE Backward 162(156.0)
+tensor(1.0946, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0231 | Time 3.3252(3.1955) | Loss 5773997.500000(5769235.168235) | NFE Forward 20(20.1) | NFE Backward 168(156.8)
+tensor(1.0721, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0232 | Time 3.3250(3.2046) | Loss 5790079.000000(5770694.236458) | NFE Forward 20(20.1) | NFE Backward 168(157.6)
+tensor(1.0846, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0233 | Time 3.1270(3.1991) | Loss 5774893.500000(5770988.184906) | NFE Forward 20(20.1) | NFE Backward 156(157.5)
+tensor(1.0875, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0234 | Time 3.2050(3.1996) | Loss 5731765.000000(5768242.561963) | NFE Forward 20(20.1) | NFE Backward 162(157.8)
+tensor(1.0777, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0235 | Time 3.2058(3.2000) | Loss 5771353.500000(5768460.327626) | NFE Forward 20(20.1) | NFE Backward 162(158.1)
+tensor(1.0881, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0236 | Time 3.2108(3.2008) | Loss 5786578.000000(5769728.564692) | NFE Forward 20(20.1) | NFE Backward 162(158.4)
+tensor(1.0688, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0237 | Time 3.3751(3.2130) | Loss 5783881.500000(5770719.270163) | NFE Forward 20(20.1) | NFE Backward 174(159.5)
+tensor(1.0897, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0238 | Time 3.4438(3.2291) | Loss 5773742.000000(5770930.861252) | NFE Forward 20(20.1) | NFE Backward 174(160.5)
+tensor(1.0912, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0239 | Time 3.4115(3.2419) | Loss 5764271.000000(5770464.670964) | NFE Forward 20(20.1) | NFE Backward 168(161.0)
+tensor(1.0827, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0240 | Time 3.5780(3.2654) | Loss 5761029.500000(5769804.208997) | NFE Forward 20(20.1) | NFE Backward 180(162.3)
+tensor(1.0759, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0241 | Time 3.5010(3.2819) | Loss 5779737.500000(5770499.539367) | NFE Forward 20(20.1) | NFE Backward 174(163.2)
+tensor(1.0784, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0242 | Time 3.5470(3.3005) | Loss 5760984.000000(5769833.451611) | NFE Forward 20(20.1) | NFE Backward 174(163.9)
+tensor(1.0808, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0243 | Time 3.4031(3.3077) | Loss 5767494.000000(5769669.689998) | NFE Forward 20(20.1) | NFE Backward 168(164.2)
+tensor(1.0723, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0244 | Time 3.4348(3.3166) | Loss 5749747.000000(5768275.101699) | NFE Forward 20(20.1) | NFE Backward 168(164.5)
+tensor(1.0802, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0245 | Time 3.3663(3.3200) | Loss 5787874.000000(5769647.024580) | NFE Forward 20(20.0) | NFE Backward 162(164.3)
+tensor(1.0708, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0246 | Time 3.4240(3.3273) | Loss 5796147.000000(5771502.022859) | NFE Forward 20(20.0) | NFE Backward 168(164.6)
+tensor(1.0807, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0247 | Time 3.3980(3.3323) | Loss 5759527.500000(5770663.806259) | NFE Forward 20(20.0) | NFE Backward 168(164.8)
+tensor(1.0894, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0248 | Time 3.3599(3.3342) | Loss 5735675.500000(5768214.624821) | NFE Forward 20(20.0) | NFE Backward 168(165.0)
+tensor(1.0791, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0249 | Time 3.3981(3.3387) | Loss 5715786.000000(5764544.621083) | NFE Forward 20(20.0) | NFE Backward 168(165.2)
+tensor(1.0723, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0250 | Time 3.5721(3.3550) | Loss 5765586.000000(5764617.517608) | NFE Forward 20(20.0) | NFE Backward 174(165.8)
+tensor(1.0785, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0251 | Time 3.4394(3.3609) | Loss 5823268.000000(5768723.051375) | NFE Forward 20(20.0) | NFE Backward 168(166.0)
+tensor(1.0680, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0252 | Time 3.3955(3.3633) | Loss 5769382.000000(5768769.177779) | NFE Forward 20(20.0) | NFE Backward 162(165.7)
+tensor(1.0706, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0253 | Time 3.5663(3.3775) | Loss 5734899.000000(5766398.265334) | NFE Forward 20(20.0) | NFE Backward 174(166.3)
+tensor(1.0983, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0254 | Time 3.3622(3.3765) | Loss 5771989.500000(5766789.651761) | NFE Forward 20(20.0) | NFE Backward 162(166.0)
+tensor(1.0770, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0255 | Time 3.4675(3.3828) | Loss 5764793.500000(5766649.921138) | NFE Forward 20(20.0) | NFE Backward 168(166.1)
+tensor(1.0824, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0256 | Time 3.3499(3.3805) | Loss 5768851.000000(5766803.996658) | NFE Forward 20(20.0) | NFE Backward 162(165.8)
+tensor(1.0801, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0257 | Time 3.3796(3.3805) | Loss 5759228.000000(5766273.676892) | NFE Forward 20(20.0) | NFE Backward 168(166.0)
+tensor(1.0850, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0258 | Time 3.5106(3.3896) | Loss 5775742.000000(5766936.459509) | NFE Forward 20(20.0) | NFE Backward 168(166.1)
+tensor(1.0772, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0259 | Time 3.5029(3.3975) | Loss 5769849.500000(5767140.372344) | NFE Forward 20(20.0) | NFE Backward 168(166.3)
+tensor(1.0639, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0260 | Time 3.4115(3.3985) | Loss 5734248.000000(5764837.906280) | NFE Forward 20(20.0) | NFE Backward 168(166.4)
+tensor(1.0816, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0261 | Time 3.5270(3.4075) | Loss 5799938.000000(5767294.912840) | NFE Forward 20(20.0) | NFE Backward 174(166.9)
+tensor(1.0759, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0262 | Time 3.4006(3.4070) | Loss 5785827.000000(5768592.158941) | NFE Forward 26(20.4) | NFE Backward 162(166.6)
+tensor(1.0747, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0263 | Time 3.4784(3.4120) | Loss 5740347.000000(5766614.997815) | NFE Forward 26(20.8) | NFE Backward 162(166.3)
+tensor(1.0843, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0264 | Time 3.4026(3.4113) | Loss 5683440.000000(5760792.747968) | NFE Forward 20(20.8) | NFE Backward 162(166.0)
+tensor(1.0806, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0265 | Time 3.6594(3.4287) | Loss 5779531.500000(5762104.460611) | NFE Forward 20(20.7) | NFE Backward 180(166.9)
+tensor(1.0794, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0266 | Time 3.3498(3.4232) | Loss 5758249.500000(5761834.613368) | NFE Forward 26(21.1) | NFE Backward 162(166.6)
+tensor(1.0785, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0267 | Time 3.4776(3.4270) | Loss 5736515.500000(5760062.275432) | NFE Forward 26(21.4) | NFE Backward 162(166.3)
+tensor(1.0737, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0268 | Time 3.4305(3.4272) | Loss 5745613.000000(5759050.826152) | NFE Forward 20(21.3) | NFE Backward 162(166.0)
+tensor(1.0767, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0269 | Time 3.4255(3.4271) | Loss 5735431.000000(5757397.438321) | NFE Forward 20(21.2) | NFE Backward 162(165.7)
+tensor(1.0725, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0270 | Time 3.3807(3.4239) | Loss 5752564.000000(5757059.097639) | NFE Forward 20(21.1) | NFE Backward 168(165.9)
+tensor(1.0613, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0271 | Time 3.2638(3.4127) | Loss 5727791.000000(5755010.330804) | NFE Forward 20(21.1) | NFE Backward 162(165.6)
+tensor(1.0782, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0272 | Time 3.3588(3.4089) | Loss 5741891.500000(5754092.012648) | NFE Forward 20(21.0) | NFE Backward 162(165.3)
+tensor(1.0833, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0273 | Time 3.3892(3.4075) | Loss 5748833.500000(5753723.916762) | NFE Forward 20(20.9) | NFE Backward 168(165.5)
+tensor(1.0872, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0274 | Time 3.4795(3.4126) | Loss 5775683.000000(5755261.052589) | NFE Forward 20(20.9) | NFE Backward 168(165.7)
+tensor(1.0899, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0275 | Time 3.7126(3.4336) | Loss 5757641.500000(5755427.683908) | NFE Forward 20(20.8) | NFE Backward 186(167.1)
+tensor(1.0718, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0276 | Time 3.4431(3.4342) | Loss 5737063.000000(5754142.156034) | NFE Forward 20(20.7) | NFE Backward 162(166.8)
+tensor(1.0860, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0277 | Time 3.4060(3.4323) | Loss 5783028.000000(5756164.165112) | NFE Forward 20(20.7) | NFE Backward 168(166.8)
+tensor(1.0790, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0278 | Time 3.3620(3.4273) | Loss 5749080.000000(5755668.273554) | NFE Forward 20(20.6) | NFE Backward 168(166.9)
+tensor(1.0955, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0279 | Time 3.3622(3.4228) | Loss 5727540.000000(5753699.294405) | NFE Forward 20(20.6) | NFE Backward 162(166.6)
+tensor(1.0857, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0280 | Time 3.3336(3.4165) | Loss 5721795.000000(5751465.993797) | NFE Forward 20(20.6) | NFE Backward 162(166.3)
+tensor(1.0947, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0281 | Time 3.3668(3.4131) | Loss 5739633.000000(5750637.684231) | NFE Forward 26(20.9) | NFE Backward 162(166.0)
+tensor(1.0739, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0282 | Time 3.5475(3.4225) | Loss 5771022.000000(5752064.586335) | NFE Forward 26(21.3) | NFE Backward 174(166.5)
+tensor(1.0689, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0283 | Time 3.6132(3.4358) | Loss 5763473.500000(5752863.210291) | NFE Forward 26(21.6) | NFE Backward 174(167.0)
+tensor(1.0779, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0284 | Time 3.3427(3.4293) | Loss 5779254.000000(5754710.565571) | NFE Forward 20(21.5) | NFE Backward 162(166.7)
+tensor(1.0820, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0285 | Time 3.6201(3.4426) | Loss 5770334.000000(5755804.205981) | NFE Forward 20(21.4) | NFE Backward 174(167.2)
+tensor(1.0804, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0286 | Time 3.4524(3.4433) | Loss 5769229.000000(5756743.941562) | NFE Forward 26(21.7) | NFE Backward 162(166.8)
+tensor(1.0933, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0287 | Time 3.3731(3.4384) | Loss 5804656.000000(5760097.785653) | NFE Forward 20(21.6) | NFE Backward 162(166.5)
+tensor(1.0761, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0288 | Time 3.3513(3.4323) | Loss 5734411.000000(5758299.710657) | NFE Forward 26(21.9) | NFE Backward 162(166.2)
+tensor(1.0872, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0289 | Time 3.6121(3.4449) | Loss 5769467.500000(5759081.455911) | NFE Forward 20(21.8) | NFE Backward 174(166.7)
+tensor(1.0781, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0290 | Time 3.5896(3.4550) | Loss 5746841.000000(5758224.623998) | NFE Forward 20(21.7) | NFE Backward 180(167.7)
+tensor(1.0910, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0291 | Time 3.5568(3.4622) | Loss 5781732.000000(5759870.140318) | NFE Forward 20(21.5) | NFE Backward 174(168.1)
+tensor(1.0870, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0292 | Time 3.4895(3.4641) | Loss 5747583.000000(5759010.040495) | NFE Forward 20(21.4) | NFE Backward 168(168.1)
+tensor(1.0889, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0293 | Time 3.4721(3.4646) | Loss 5749104.000000(5758316.617661) | NFE Forward 32(22.2) | NFE Backward 168(168.1)
+tensor(1.0832, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0294 | Time 3.5104(3.4678) | Loss 5771659.500000(5759250.619425) | NFE Forward 20(22.0) | NFE Backward 168(168.1)
+tensor(1.0786, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0295 | Time 3.5114(3.4709) | Loss 5748724.000000(5758513.756065) | NFE Forward 20(21.9) | NFE Backward 174(168.5)
+tensor(1.0821, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0296 | Time 3.5405(3.4758) | Loss 5740925.500000(5757282.578140) | NFE Forward 26(22.2) | NFE Backward 174(168.9)
+tensor(1.0724, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0297 | Time 3.7708(3.4964) | Loss 5755171.500000(5757134.802670) | NFE Forward 20(22.0) | NFE Backward 186(170.1)
+tensor(1.0878, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0298 | Time 3.4811(3.4953) | Loss 5768151.000000(5757905.936484) | NFE Forward 20(21.9) | NFE Backward 168(169.9)
+tensor(1.1031, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0299 | Time 3.5325(3.4979) | Loss 5745481.500000(5757036.225930) | NFE Forward 20(21.7) | NFE Backward 168(169.8)
+tensor(1.0828, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0300 | Time 3.6182(3.5064) | Loss 5707479.000000(5753567.220115) | NFE Forward 20(21.6) | NFE Backward 174(170.1)
+tensor(1.0819, device='cuda:0')
+[TEST] Iter 0300 | Test Loss 5747027.500000 | NFE 20
+Skipping vis as data dimension is >2
+tensor(1.0799, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0301 | Time 3.8956(3.5336) | Loss 5750407.500000(5753346.039707) | NFE Forward 20(21.5) | NFE Backward 174(170.4)
+tensor(1.0763, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0302 | Time 3.6853(3.5442) | Loss 5793802.000000(5756177.956927) | NFE Forward 20(21.4) | NFE Backward 174(170.6)
+tensor(1.0755, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0303 | Time 3.8428(3.5651) | Loss 5765479.000000(5756829.029942) | NFE Forward 20(21.3) | NFE Backward 186(171.7)
+tensor(1.1006, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0304 | Time 3.5137(3.5615) | Loss 5723504.000000(5754496.277846) | NFE Forward 26(21.6) | NFE Backward 162(171.0)
+tensor(1.0841, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0305 | Time 3.6127(3.5651) | Loss 5761907.000000(5755015.028397) | NFE Forward 20(21.5) | NFE Backward 180(171.6)
+tensor(1.0684, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0306 | Time 3.6149(3.5686) | Loss 5695985.500000(5750882.961409) | NFE Forward 20(21.4) | NFE Backward 174(171.8)
+tensor(1.0891, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0307 | Time 3.4865(3.5628) | Loss 5762658.000000(5751707.214111) | NFE Forward 32(22.2) | NFE Backward 162(171.1)
+tensor(1.0789, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0308 | Time 3.4492(3.5549) | Loss 5708723.000000(5748698.319123) | NFE Forward 20(22.0) | NFE Backward 168(170.9)
+tensor(1.0820, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0309 | Time 3.5583(3.5551) | Loss 5743387.000000(5748326.526784) | NFE Forward 20(21.9) | NFE Backward 174(171.1)
+tensor(1.0801, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0310 | Time 3.5437(3.5543) | Loss 5707449.500000(5745465.134909) | NFE Forward 20(21.7) | NFE Backward 168(170.9)
+tensor(1.0666, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0311 | Time 3.4758(3.5488) | Loss 5760259.000000(5746500.705466) | NFE Forward 20(21.6) | NFE Backward 168(170.7)
+tensor(1.0819, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0312 | Time 3.6190(3.5537) | Loss 5760385.000000(5747472.606083) | NFE Forward 20(21.5) | NFE Backward 168(170.5)
+tensor(1.0824, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0313 | Time 3.3939(3.5426) | Loss 5723574.000000(5745799.703657) | NFE Forward 20(21.4) | NFE Backward 162(169.9)
+tensor(1.0909, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0314 | Time 3.4309(3.5347) | Loss 5776432.000000(5747943.964401) | NFE Forward 20(21.3) | NFE Backward 162(169.4)
+tensor(1.0983, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0315 | Time 3.7321(3.5486) | Loss 5764899.500000(5749130.851893) | NFE Forward 26(21.6) | NFE Backward 180(170.1)
+tensor(1.0906, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0316 | Time 3.6953(3.5588) | Loss 5711315.000000(5746483.742261) | NFE Forward 20(21.5) | NFE Backward 180(170.8)
+tensor(1.0686, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0317 | Time 3.5371(3.5573) | Loss 5711306.000000(5744021.300302) | NFE Forward 20(21.4) | NFE Backward 174(171.0)
+tensor(1.0638, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0318 | Time 3.6718(3.5653) | Loss 5706564.000000(5741399.289281) | NFE Forward 32(22.1) | NFE Backward 174(171.2)
+tensor(1.0827, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0319 | Time 3.5444(3.5639) | Loss 5704911.000000(5738845.109032) | NFE Forward 20(22.0) | NFE Backward 168(171.0)
+tensor(1.0829, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0320 | Time 3.6444(3.5695) | Loss 5749341.500000(5739579.856399) | NFE Forward 20(21.9) | NFE Backward 174(171.2)
+tensor(1.0846, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0321 | Time 3.5857(3.5706) | Loss 5753153.500000(5740530.011451) | NFE Forward 26(22.1) | NFE Backward 168(171.0)
+tensor(1.0904, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0322 | Time 3.8499(3.5902) | Loss 5718278.000000(5738972.370650) | NFE Forward 20(22.0) | NFE Backward 180(171.6)
+tensor(1.0947, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0323 | Time 3.5305(3.5860) | Loss 5703599.000000(5736496.234704) | NFE Forward 20(21.9) | NFE Backward 168(171.4)
+tensor(1.0719, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0324 | Time 3.5470(3.5833) | Loss 5676483.000000(5732295.308275) | NFE Forward 20(21.7) | NFE Backward 162(170.7)
+tensor(1.0684, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0325 | Time 3.4922(3.5769) | Loss 5752928.000000(5733739.596696) | NFE Forward 20(21.6) | NFE Backward 162(170.1)
+tensor(1.0957, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0326 | Time 3.6140(3.5795) | Loss 5751976.000000(5735016.144927) | NFE Forward 20(21.5) | NFE Backward 168(170.0)
+tensor(1.0771, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0327 | Time 3.5854(3.5799) | Loss 5778637.500000(5738069.639782) | NFE Forward 20(21.4) | NFE Backward 168(169.8)
+tensor(1.0648, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0328 | Time 3.4991(3.5743) | Loss 5727813.500000(5737351.709997) | NFE Forward 26(21.7) | NFE Backward 168(169.7)
+tensor(1.0816, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0329 | Time 3.4337(3.5644) | Loss 5737482.000000(5737360.830298) | NFE Forward 20(21.6) | NFE Backward 168(169.6)
+tensor(1.0817, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0330 | Time 3.4256(3.5547) | Loss 5757349.000000(5738760.002177) | NFE Forward 20(21.5) | NFE Backward 162(169.0)
+tensor(1.0874, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0331 | Time 3.6250(3.5596) | Loss 5751767.500000(5739670.527024) | NFE Forward 20(21.4) | NFE Backward 174(169.4)
+tensor(1.0861, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0332 | Time 3.6713(3.5674) | Loss 5723159.500000(5738514.755133) | NFE Forward 20(21.3) | NFE Backward 174(169.7)
+tensor(1.0866, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0333 | Time 3.6777(3.5752) | Loss 5657289.000000(5732828.952273) | NFE Forward 26(21.6) | NFE Backward 174(170.0)
+tensor(1.0872, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0334 | Time 3.6606(3.5811) | Loss 5741237.000000(5733417.515614) | NFE Forward 26(21.9) | NFE Backward 168(169.9)
+tensor(1.0913, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0335 | Time 4.0787(3.6160) | Loss 5751994.000000(5734717.869521) | NFE Forward 20(21.8) | NFE Backward 198(171.8)
+tensor(1.0802, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0336 | Time 3.6632(3.6193) | Loss 5679419.000000(5730846.948655) | NFE Forward 20(21.7) | NFE Backward 174(172.0)
+tensor(1.0961, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0337 | Time 3.6514(3.6215) | Loss 5747725.500000(5732028.447249) | NFE Forward 20(21.5) | NFE Backward 162(171.3)
+tensor(1.0912, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0338 | Time 3.6572(3.6240) | Loss 5717127.500000(5730985.380942) | NFE Forward 20(21.4) | NFE Backward 162(170.6)
+tensor(1.0851, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0339 | Time 3.5463(3.6186) | Loss 5743626.000000(5731870.224276) | NFE Forward 20(21.3) | NFE Backward 162(170.0)
+tensor(1.0682, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0340 | Time 3.6331(3.6196) | Loss 5713165.500000(5730560.893576) | NFE Forward 20(21.2) | NFE Backward 168(169.9)
+tensor(1.0629, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0341 | Time 3.7682(3.6300) | Loss 5725211.000000(5730186.401026) | NFE Forward 20(21.2) | NFE Backward 180(170.6)
+tensor(1.0804, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0342 | Time 3.7365(3.6375) | Loss 5681619.500000(5726786.717954) | NFE Forward 26(21.5) | NFE Backward 168(170.4)
+tensor(1.0692, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0343 | Time 3.5530(3.6315) | Loss 5727809.500000(5726858.312697) | NFE Forward 20(21.4) | NFE Backward 168(170.3)
+tensor(1.0689, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0344 | Time 3.7380(3.6390) | Loss 5727507.000000(5726903.720809) | NFE Forward 20(21.3) | NFE Backward 168(170.1)
+tensor(1.0714, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0345 | Time 3.8334(3.6526) | Loss 5712649.500000(5725905.925352) | NFE Forward 20(21.2) | NFE Backward 174(170.4)
+tensor(1.0909, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0346 | Time 3.7743(3.6611) | Loss 5737837.000000(5726741.100577) | NFE Forward 26(21.5) | NFE Backward 174(170.6)
+tensor(1.0780, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0347 | Time 3.9598(3.6820) | Loss 5701773.000000(5724993.333537) | NFE Forward 32(22.3) | NFE Backward 180(171.3)
+tensor(1.0918, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0348 | Time 3.8149(3.6913) | Loss 5754512.000000(5727059.640189) | NFE Forward 26(22.5) | NFE Backward 174(171.5)
+tensor(1.0846, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0349 | Time 3.9438(3.7090) | Loss 5710617.500000(5725908.690376) | NFE Forward 26(22.8) | NFE Backward 180(172.1)
+tensor(1.0815, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0350 | Time 3.7994(3.7153) | Loss 5735493.000000(5726579.592050) | NFE Forward 26(23.0) | NFE Backward 180(172.6)
+tensor(1.0652, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0351 | Time 3.6947(3.7139) | Loss 5750197.000000(5728232.810606) | NFE Forward 26(23.2) | NFE Backward 168(172.3)
+tensor(1.0947, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0352 | Time 3.6434(3.7089) | Loss 5742832.000000(5729254.753864) | NFE Forward 20(23.0) | NFE Backward 174(172.4)
+tensor(1.0694, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0353 | Time 3.8031(3.7155) | Loss 5708006.000000(5727767.341093) | NFE Forward 26(23.2) | NFE Backward 180(172.9)
+tensor(1.0625, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0354 | Time 3.7243(3.7161) | Loss 5743057.500000(5728837.652217) | NFE Forward 26(23.4) | NFE Backward 174(173.0)
+tensor(1.0625, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0355 | Time 3.7061(3.7154) | Loss 5744671.000000(5729945.986562) | NFE Forward 26(23.6) | NFE Backward 174(173.1)
+tensor(1.0755, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0356 | Time 3.9035(3.7286) | Loss 5755107.000000(5731707.257502) | NFE Forward 26(23.7) | NFE Backward 186(174.0)
+tensor(1.0751, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0357 | Time 3.8102(3.7343) | Loss 5754458.000000(5733299.809477) | NFE Forward 20(23.5) | NFE Backward 174(174.0)
+tensor(1.0810, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0358 | Time 3.7867(3.7380) | Loss 5703876.000000(5731240.142814) | NFE Forward 26(23.7) | NFE Backward 180(174.4)
+tensor(1.0708, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0359 | Time 3.5437(3.7244) | Loss 5719894.000000(5730445.912817) | NFE Forward 26(23.8) | NFE Backward 168(174.0)
+tensor(1.0591, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0360 | Time 3.7465(3.7259) | Loss 5729740.000000(5730396.498920) | NFE Forward 26(24.0) | NFE Backward 180(174.4)
+tensor(1.0744, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0361 | Time 3.5635(3.7146) | Loss 5757545.500000(5732296.928995) | NFE Forward 26(24.1) | NFE Backward 162(173.5)
+tensor(1.0892, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0362 | Time 3.6203(3.7080) | Loss 5706159.000000(5730467.273966) | NFE Forward 26(24.2) | NFE Backward 174(173.6)
+tensor(1.1056, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0363 | Time 3.6227(3.7020) | Loss 5699147.000000(5728274.854788) | NFE Forward 26(24.4) | NFE Backward 174(173.6)
+tensor(1.0788, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0364 | Time 3.6910(3.7012) | Loss 5723347.000000(5727929.904953) | NFE Forward 26(24.5) | NFE Backward 174(173.6)
+tensor(1.0943, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0365 | Time 3.7239(3.7028) | Loss 5742205.500000(5728929.196606) | NFE Forward 26(24.6) | NFE Backward 174(173.6)
+tensor(1.0779, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0366 | Time 3.5945(3.6952) | Loss 5720531.000000(5728341.322844) | NFE Forward 20(24.3) | NFE Backward 162(172.8)
+tensor(1.0828, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0367 | Time 3.7112(3.6963) | Loss 5756063.500000(5730281.875245) | NFE Forward 20(24.0) | NFE Backward 174(172.9)
+tensor(1.0745, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0368 | Time 3.9058(3.7110) | Loss 5735815.500000(5730669.228978) | NFE Forward 20(23.7) | NFE Backward 186(173.8)
+tensor(1.0750, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0369 | Time 3.7401(3.7130) | Loss 5736609.500000(5731085.047949) | NFE Forward 20(23.4) | NFE Backward 174(173.8)
+tensor(1.0711, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0370 | Time 3.9581(3.7302) | Loss 5706961.000000(5729396.364593) | NFE Forward 26(23.6) | NFE Backward 180(174.3)
+tensor(1.0587, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0371 | Time 3.6577(3.7251) | Loss 5696663.000000(5727105.029071) | NFE Forward 26(23.8) | NFE Backward 168(173.8)
+tensor(1.0610, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0372 | Time 3.6122(3.7172) | Loss 5762651.000000(5729593.247036) | NFE Forward 20(23.5) | NFE Backward 168(173.4)
+tensor(1.0905, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0373 | Time 3.7471(3.7193) | Loss 5721972.000000(5729059.759744) | NFE Forward 20(23.3) | NFE Backward 174(173.5)
+tensor(1.0774, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0374 | Time 3.6066(3.7114) | Loss 5708713.500000(5727635.521562) | NFE Forward 26(23.5) | NFE Backward 162(172.7)
+tensor(1.0925, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0375 | Time 3.6540(3.7074) | Loss 5742124.000000(5728649.715052) | NFE Forward 20(23.2) | NFE Backward 174(172.8)
+tensor(1.0806, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0376 | Time 3.7917(3.7133) | Loss 5725857.500000(5728454.259999) | NFE Forward 20(23.0) | NFE Backward 174(172.8)
+tensor(1.0774, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0377 | Time 3.8432(3.7224) | Loss 5699692.000000(5726440.901799) | NFE Forward 20(22.8) | NFE Backward 174(172.9)
+tensor(1.0884, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0378 | Time 3.6497(3.7173) | Loss 5760433.500000(5728820.383673) | NFE Forward 20(22.6) | NFE Backward 174(173.0)
+tensor(1.0650, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0379 | Time 3.7602(3.7203) | Loss 5762632.000000(5731187.196816) | NFE Forward 20(22.4) | NFE Backward 180(173.5)
+tensor(1.0646, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0380 | Time 3.9202(3.7343) | Loss 5722089.500000(5730550.358039) | NFE Forward 26(22.7) | NFE Backward 186(174.4)
+tensor(1.0763, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0381 | Time 3.7398(3.7347) | Loss 5721302.000000(5729902.972976) | NFE Forward 20(22.5) | NFE Backward 180(174.8)
+tensor(1.0851, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0382 | Time 3.7750(3.7375) | Loss 5746092.000000(5731036.204868) | NFE Forward 20(22.3) | NFE Backward 180(175.1)
+tensor(1.0722, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0383 | Time 3.7045(3.7352) | Loss 5723807.500000(5730530.195527) | NFE Forward 32(23.0) | NFE Backward 168(174.6)
+tensor(1.0696, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0384 | Time 3.9461(3.7500) | Loss 5714827.000000(5729430.971840) | NFE Forward 20(22.8) | NFE Backward 192(175.8)
+tensor(1.0709, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0385 | Time 3.7964(3.7532) | Loss 5768244.000000(5732147.883811) | NFE Forward 20(22.6) | NFE Backward 180(176.1)
+tensor(1.0690, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0386 | Time 4.0114(3.7713) | Loss 5738816.000000(5732614.651944) | NFE Forward 32(23.2) | NFE Backward 186(176.8)
+tensor(1.0635, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0387 | Time 3.8099(3.7740) | Loss 5679783.000000(5728916.436308) | NFE Forward 32(23.8) | NFE Backward 174(176.6)
+tensor(1.0605, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0388 | Time 3.9573(3.7868) | Loss 5721605.000000(5728404.635767) | NFE Forward 38(24.8) | NFE Backward 174(176.4)
+tensor(1.0780, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0389 | Time 3.6238(3.7754) | Loss 5714583.500000(5727437.156263) | NFE Forward 20(24.5) | NFE Backward 168(175.9)
+tensor(1.0717, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0390 | Time 3.5933(3.7627) | Loss 5690177.500000(5724828.980325) | NFE Forward 20(24.2) | NFE Backward 168(175.3)
+tensor(1.0632, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0391 | Time 3.7221(3.7598) | Loss 5717519.000000(5724317.281702) | NFE Forward 32(24.7) | NFE Backward 168(174.8)
+tensor(1.0570, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0392 | Time 3.6904(3.7550) | Loss 5738003.000000(5725275.281983) | NFE Forward 32(25.2) | NFE Backward 168(174.3)
+tensor(1.0643, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0393 | Time 3.7628(3.7555) | Loss 5719779.000000(5724890.542244) | NFE Forward 32(25.7) | NFE Backward 174(174.3)
+tensor(1.0707, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0394 | Time 3.8450(3.7618) | Loss 5675780.000000(5721452.804287) | NFE Forward 32(26.2) | NFE Backward 174(174.3)
+tensor(1.0691, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0395 | Time 3.7480(3.7608) | Loss 5694616.000000(5719574.227987) | NFE Forward 32(26.6) | NFE Backward 168(173.8)
+tensor(1.0498, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0396 | Time 3.8249(3.7653) | Loss 5681115.500000(5716882.117028) | NFE Forward 32(26.9) | NFE Backward 168(173.4)
+tensor(1.0853, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0397 | Time 3.7027(3.7609) | Loss 5743771.500000(5718764.373836) | NFE Forward 32(27.3) | NFE Backward 174(173.5)
+tensor(1.0650, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0398 | Time 3.8586(3.7678) | Loss 5721590.000000(5718962.167667) | NFE Forward 32(27.6) | NFE Backward 174(173.5)
+tensor(1.0711, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0399 | Time 3.8748(3.7752) | Loss 5679692.000000(5716213.255931) | NFE Forward 32(27.9) | NFE Backward 180(174.0)
+tensor(1.0605, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0400 | Time 3.4936(3.7555) | Loss 5702461.000000(5715250.598015) | NFE Forward 26(27.8) | NFE Backward 162(173.1)
+tensor(1.0729, device='cuda:0')
+[TEST] Iter 0400 | Test Loss 5688232.000000 | NFE 26
+Skipping vis as data dimension is >2
+tensor(1.0858, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0401 | Time 3.4168(3.7318) | Loss 5715055.000000(5715236.906154) | NFE Forward 32(28.1) | NFE Backward 162(172.3)
+tensor(1.0657, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0402 | Time 3.6836(3.7284) | Loss 5690827.500000(5713528.247724) | NFE Forward 32(28.4) | NFE Backward 168(172.0)
+tensor(1.0607, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0403 | Time 3.5275(3.7144) | Loss 5735236.000000(5715047.790383) | NFE Forward 26(28.2) | NFE Backward 162(171.3)
+tensor(1.0582, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0404 | Time 3.7862(3.7194) | Loss 5730099.000000(5716101.375056) | NFE Forward 32(28.5) | NFE Backward 180(171.9)
+tensor(1.0852, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0405 | Time 3.6619(3.7154) | Loss 5697216.000000(5714779.398802) | NFE Forward 26(28.3) | NFE Backward 174(172.1)
+tensor(1.0558, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0406 | Time 3.6133(3.7082) | Loss 5759524.000000(5717911.520886) | NFE Forward 26(28.1) | NFE Backward 168(171.8)
+tensor(1.0764, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0407 | Time 3.8737(3.7198) | Loss 5662085.000000(5714003.664424) | NFE Forward 20(27.6) | NFE Backward 180(172.4)
+tensor(1.0605, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0408 | Time 3.8470(3.7287) | Loss 5699698.000000(5713002.267914) | NFE Forward 32(27.9) | NFE Backward 174(172.5)
+tensor(1.0552, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0409 | Time 3.6861(3.7257) | Loss 5691499.500000(5711497.074160) | NFE Forward 20(27.3) | NFE Backward 174(172.6)
+tensor(1.0708, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0410 | Time 3.7425(3.7269) | Loss 5731349.500000(5712886.743969) | NFE Forward 32(27.7) | NFE Backward 174(172.7)
+tensor(1.0694, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0411 | Time 3.8333(3.7344) | Loss 5732331.000000(5714247.841891) | NFE Forward 32(28.0) | NFE Backward 180(173.2)
+tensor(1.0505, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0412 | Time 4.0128(3.7539) | Loss 5683271.000000(5712079.462959) | NFE Forward 32(28.2) | NFE Backward 192(174.5)
+tensor(1.0470, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0413 | Time 3.8550(3.7609) | Loss 5725895.000000(5713046.550552) | NFE Forward 20(27.7) | NFE Backward 180(174.9)
+tensor(1.0776, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0414 | Time 3.9851(3.7766) | Loss 5730060.000000(5714237.492013) | NFE Forward 32(28.0) | NFE Backward 180(175.3)
+tensor(1.0586, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0415 | Time 4.0360(3.7948) | Loss 5688033.500000(5712403.212572) | NFE Forward 26(27.8) | NFE Backward 180(175.6)
+tensor(1.0537, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0416 | Time 4.0582(3.8132) | Loss 5669769.000000(5709418.817692) | NFE Forward 32(28.1) | NFE Backward 192(176.7)
+tensor(1.0570, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0417 | Time 3.9105(3.8200) | Loss 5744730.000000(5711890.600454) | NFE Forward 32(28.4) | NFE Backward 180(177.0)
+tensor(1.0498, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0418 | Time 3.9841(3.8315) | Loss 5716024.000000(5712179.938422) | NFE Forward 32(28.6) | NFE Backward 186(177.6)
+tensor(1.0486, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0419 | Time 3.9524(3.8400) | Loss 5698031.000000(5711189.512732) | NFE Forward 26(28.5) | NFE Backward 186(178.2)
+tensor(1.0470, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0420 | Time 3.9938(3.8508) | Loss 5669325.000000(5708258.996841) | NFE Forward 26(28.3) | NFE Backward 192(179.2)
+tensor(1.0637, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0421 | Time 4.1567(3.8722) | Loss 5742482.000000(5710654.607062) | NFE Forward 26(28.1) | NFE Backward 192(180.1)
+tensor(1.0519, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0422 | Time 3.7981(3.8670) | Loss 5744496.000000(5713023.504568) | NFE Forward 26(28.0) | NFE Backward 174(179.6)
+tensor(1.0574, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0423 | Time 4.2219(3.8918) | Loss 5725681.500000(5713909.564248) | NFE Forward 26(27.8) | NFE Backward 204(181.3)
+tensor(1.0687, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0424 | Time 3.9387(3.8951) | Loss 5703200.000000(5713159.894751) | NFE Forward 26(27.7) | NFE Backward 192(182.1)
+tensor(1.0544, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0425 | Time 3.8512(3.8920) | Loss 5720407.500000(5713667.227118) | NFE Forward 32(28.0) | NFE Backward 186(182.4)
+tensor(1.0572, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0426 | Time 3.8570(3.8896) | Loss 5684363.000000(5711615.931220) | NFE Forward 26(27.9) | NFE Backward 186(182.6)
+tensor(1.0692, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0427 | Time 3.8067(3.8838) | Loss 5727985.500000(5712761.801035) | NFE Forward 26(27.7) | NFE Backward 180(182.4)
+tensor(1.0353, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0428 | Time 3.7794(3.8765) | Loss 5707569.000000(5712398.304962) | NFE Forward 32(28.0) | NFE Backward 180(182.3)
+tensor(1.0539, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0429 | Time 3.9893(3.8844) | Loss 5665861.500000(5709140.728615) | NFE Forward 26(27.9) | NFE Backward 180(182.1)
+tensor(1.0522, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0430 | Time 4.0878(3.8986) | Loss 5725623.500000(5710294.522612) | NFE Forward 32(28.2) | NFE Backward 192(182.8)
+tensor(1.0370, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0431 | Time 4.2011(3.9198) | Loss 5691507.000000(5708979.396029) | NFE Forward 32(28.4) | NFE Backward 198(183.9)
+tensor(1.0643, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0432 | Time 4.1175(3.9336) | Loss 5694713.000000(5707980.748307) | NFE Forward 32(28.7) | NFE Backward 186(184.0)
+tensor(1.0556, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0433 | Time 4.2915(3.9587) | Loss 5676632.000000(5705786.335925) | NFE Forward 32(28.9) | NFE Backward 198(185.0)
+tensor(1.0541, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0434 | Time 4.1662(3.9732) | Loss 5669807.000000(5703267.782411) | NFE Forward 32(29.1) | NFE Backward 192(185.5)
+tensor(1.0437, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0435 | Time 4.0060(3.9755) | Loss 5694577.500000(5702659.462642) | NFE Forward 32(29.3) | NFE Backward 186(185.5)
+tensor(1.0483, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0436 | Time 4.2100(3.9919) | Loss 5663788.000000(5699938.460257) | NFE Forward 32(29.5) | NFE Backward 198(186.4)
+tensor(1.0556, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0437 | Time 3.9701(3.9904) | Loss 5695195.500000(5699606.453039) | NFE Forward 38(30.1) | NFE Backward 186(186.4)
+tensor(1.0459, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0438 | Time 4.0835(3.9969) | Loss 5718564.000000(5700933.481326) | NFE Forward 32(30.3) | NFE Backward 192(186.8)
+tensor(1.0596, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0439 | Time 3.9162(3.9913) | Loss 5698193.500000(5700741.682633) | NFE Forward 26(30.0) | NFE Backward 180(186.3)
+tensor(1.0498, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0440 | Time 3.9303(3.9870) | Loss 5707579.000000(5701220.294849) | NFE Forward 32(30.1) | NFE Backward 186(186.3)
+tensor(1.0720, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0441 | Time 3.9881(3.9871) | Loss 5681872.000000(5699865.914210) | NFE Forward 26(29.8) | NFE Backward 180(185.8)
+tensor(1.0520, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0442 | Time 3.9163(3.9821) | Loss 5710197.500000(5700589.125215) | NFE Forward 26(29.5) | NFE Backward 180(185.4)
+tensor(1.0285, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0443 | Time 3.9366(3.9789) | Loss 5710696.000000(5701296.606450) | NFE Forward 32(29.7) | NFE Backward 180(185.0)
+tensor(1.0359, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0444 | Time 4.1623(3.9918) | Loss 5684703.000000(5700135.053998) | NFE Forward 26(29.5) | NFE Backward 198(185.9)
+tensor(1.0374, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0445 | Time 4.1019(3.9995) | Loss 5691688.000000(5699543.760219) | NFE Forward 32(29.6) | NFE Backward 192(186.4)
+tensor(1.0430, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0446 | Time 3.7754(3.9838) | Loss 5703771.000000(5699839.667003) | NFE Forward 26(29.4) | NFE Backward 174(185.5)
+tensor(1.0510, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0447 | Time 3.9250(3.9797) | Loss 5674549.000000(5698069.320313) | NFE Forward 26(29.1) | NFE Backward 180(185.1)
+tensor(1.0633, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0448 | Time 3.9454(3.9773) | Loss 5698553.000000(5698103.177891) | NFE Forward 26(28.9) | NFE Backward 186(185.2)
+tensor(1.0498, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0449 | Time 3.8704(3.9698) | Loss 5685629.500000(5697230.020439) | NFE Forward 32(29.1) | NFE Backward 186(185.2)
+tensor(1.0155, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0450 | Time 4.0688(3.9767) | Loss 5683724.000000(5696284.599008) | NFE Forward 32(29.3) | NFE Backward 192(185.7)
+tensor(1.0522, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0451 | Time 4.0376(3.9810) | Loss 5685595.000000(5695536.327077) | NFE Forward 32(29.5) | NFE Backward 198(186.6)
+tensor(1.0208, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0452 | Time 3.9546(3.9791) | Loss 5747821.500000(5699196.289182) | NFE Forward 26(29.3) | NFE Backward 180(186.1)
+tensor(1.0379, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0453 | Time 3.9265(3.9755) | Loss 5718549.000000(5700550.978939) | NFE Forward 26(29.0) | NFE Backward 180(185.7)
+tensor(1.0310, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0454 | Time 3.9753(3.9754) | Loss 5684548.000000(5699430.770414) | NFE Forward 32(29.3) | NFE Backward 186(185.7)
+tensor(1.0337, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0455 | Time 4.0474(3.9805) | Loss 5687009.500000(5698561.281485) | NFE Forward 26(29.0) | NFE Backward 186(185.7)
+tensor(1.0445, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0456 | Time 4.3370(4.0054) | Loss 5654573.500000(5695482.136781) | NFE Forward 32(29.2) | NFE Backward 198(186.6)
+tensor(1.0443, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0457 | Time 4.0301(4.0072) | Loss 5709484.000000(5696462.267206) | NFE Forward 26(29.0) | NFE Backward 192(187.0)
+tensor(1.0321, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0458 | Time 4.1002(4.0137) | Loss 5692337.500000(5696173.533502) | NFE Forward 32(29.2) | NFE Backward 192(187.3)
+tensor(1.0433, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0459 | Time 4.1095(4.0204) | Loss 5681068.000000(5695116.146156) | NFE Forward 32(29.4) | NFE Backward 192(187.6)
+tensor(1.0462, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0460 | Time 4.0908(4.0253) | Loss 5698845.000000(5695377.165926) | NFE Forward 32(29.6) | NFE Backward 186(187.5)
+tensor(1.0347, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0461 | Time 3.7363(4.0051) | Loss 5630758.000000(5690853.824311) | NFE Forward 26(29.3) | NFE Backward 174(186.6)
+tensor(1.0638, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0462 | Time 3.9333(4.0001) | Loss 5678735.000000(5690005.506609) | NFE Forward 26(29.1) | NFE Backward 180(186.1)
+tensor(1.0290, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0463 | Time 4.1471(4.0103) | Loss 5705773.000000(5691109.231146) | NFE Forward 26(28.9) | NFE Backward 198(187.0)
+tensor(1.0480, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0464 | Time 4.0016(4.0097) | Loss 5659334.000000(5688884.964966) | NFE Forward 32(29.1) | NFE Backward 180(186.5)
+tensor(1.0428, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0465 | Time 4.2288(4.0251) | Loss 5692072.000000(5689108.057418) | NFE Forward 26(28.9) | NFE Backward 192(186.9)
+tensor(1.0354, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0466 | Time 4.0645(4.0278) | Loss 5689567.000000(5689140.183399) | NFE Forward 26(28.7) | NFE Backward 186(186.8)
+tensor(1.0340, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0467 | Time 3.7311(4.0071) | Loss 5664784.000000(5687435.250561) | NFE Forward 32(28.9) | NFE Backward 174(185.9)
+tensor(1.0342, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0468 | Time 4.0640(4.0110) | Loss 5691111.500000(5687692.588022) | NFE Forward 32(29.1) | NFE Backward 186(185.9)
+tensor(1.0327, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0469 | Time 4.2877(4.0304) | Loss 5686208.000000(5687588.666860) | NFE Forward 26(28.9) | NFE Backward 204(187.2)
+tensor(1.0119, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0470 | Time 4.1988(4.0422) | Loss 5700957.500000(5688524.485180) | NFE Forward 26(28.7) | NFE Backward 192(187.5)
+tensor(1.0117, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0471 | Time 3.9432(4.0353) | Loss 5653131.000000(5686046.941218) | NFE Forward 26(28.5) | NFE Backward 186(187.4)
+tensor(1.0172, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0472 | Time 4.1559(4.0437) | Loss 5702057.500000(5687167.680332) | NFE Forward 26(28.3) | NFE Backward 192(187.7)
+tensor(1.0157, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0473 | Time 4.1760(4.0530) | Loss 5695625.500000(5687759.727709) | NFE Forward 26(28.2) | NFE Backward 192(188.0)
+tensor(1.0201, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0474 | Time 4.0253(4.0510) | Loss 5703711.500000(5688876.351769) | NFE Forward 32(28.4) | NFE Backward 186(187.9)
+tensor(1.0250, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0475 | Time 3.9415(4.0434) | Loss 5650542.000000(5686192.947146) | NFE Forward 26(28.3) | NFE Backward 186(187.8)
+tensor(1.0196, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0476 | Time 3.8987(4.0332) | Loss 5650517.000000(5683695.630845) | NFE Forward 26(28.1) | NFE Backward 180(187.2)
+tensor(1.0051, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0477 | Time 4.0228(4.0325) | Loss 5686530.000000(5683894.036686) | NFE Forward 26(28.0) | NFE Backward 192(187.5)
+tensor(1.0323, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0478 | Time 4.1139(4.0382) | Loss 5669849.500000(5682910.919118) | NFE Forward 32(28.3) | NFE Backward 186(187.4)
+tensor(1.0241, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0479 | Time 3.8986(4.0284) | Loss 5719076.000000(5685442.474780) | NFE Forward 26(28.1) | NFE Backward 186(187.3)
+tensor(1.0187, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0480 | Time 3.9279(4.0214) | Loss 5682649.500000(5685246.966545) | NFE Forward 26(27.9) | NFE Backward 186(187.2)
+tensor(1.0126, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0481 | Time 4.0272(4.0218) | Loss 5668531.000000(5684076.848887) | NFE Forward 26(27.8) | NFE Backward 192(187.6)
+tensor(1.0298, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0482 | Time 4.2701(4.0392) | Loss 5680605.000000(5683833.819465) | NFE Forward 26(27.7) | NFE Backward 210(189.1)
+tensor(1.0365, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0483 | Time 3.9910(4.0358) | Loss 5672631.500000(5683049.657102) | NFE Forward 26(27.6) | NFE Backward 192(189.3)
+tensor(1.0266, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0484 | Time 3.9244(4.0280) | Loss 5682721.500000(5683026.686105) | NFE Forward 26(27.5) | NFE Backward 180(188.7)
+tensor(1.0046, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0485 | Time 4.1660(4.0377) | Loss 5688821.500000(5683432.323078) | NFE Forward 26(27.4) | NFE Backward 192(188.9)
+tensor(1.0071, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0486 | Time 4.0436(4.0381) | Loss 5729851.000000(5686681.630462) | NFE Forward 26(27.3) | NFE Backward 186(188.7)
+tensor(1.0277, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0487 | Time 3.8891(4.0277) | Loss 5721305.000000(5689105.266330) | NFE Forward 26(27.2) | NFE Backward 180(188.1)
+tensor(1.0200, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0488 | Time 4.1371(4.0353) | Loss 5674665.500000(5688094.482687) | NFE Forward 26(27.1) | NFE Backward 198(188.8)
+tensor(1.0073, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0489 | Time 4.0680(4.0376) | Loss 5675871.500000(5687238.873899) | NFE Forward 26(27.0) | NFE Backward 186(188.6)
+tensor(1.0071, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0490 | Time 3.9181(4.0292) | Loss 5649112.000000(5684569.992726) | NFE Forward 26(26.9) | NFE Backward 186(188.4)
+tensor(1.0027, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0491 | Time 3.8001(4.0132) | Loss 5678243.000000(5684127.103235) | NFE Forward 26(26.9) | NFE Backward 180(187.8)
+tensor(0.9945, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0492 | Time 3.9129(4.0062) | Loss 5663568.000000(5682687.966009) | NFE Forward 26(26.8) | NFE Backward 186(187.7)
+tensor(1.0082, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0493 | Time 3.7091(3.9854) | Loss 5647285.000000(5680209.758388) | NFE Forward 26(26.8) | NFE Backward 174(186.7)
+tensor(1.0169, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0494 | Time 3.9591(3.9835) | Loss 5667214.000000(5679300.055301) | NFE Forward 26(26.7) | NFE Backward 192(187.1)
+tensor(1.0182, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0495 | Time 3.9064(3.9781) | Loss 5681755.500000(5679471.936430) | NFE Forward 26(26.7) | NFE Backward 192(187.5)
+tensor(1.0147, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0496 | Time 4.0511(3.9833) | Loss 5660805.000000(5678165.250880) | NFE Forward 26(26.6) | NFE Backward 192(187.8)
+tensor(0.9845, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0497 | Time 4.2215(3.9999) | Loss 5628237.500000(5674670.308318) | NFE Forward 26(26.6) | NFE Backward 204(188.9)
+tensor(1.0061, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0498 | Time 3.9680(3.9977) | Loss 5659058.000000(5673577.446736) | NFE Forward 26(26.5) | NFE Backward 186(188.7)
+tensor(1.0080, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0499 | Time 3.8955(3.9905) | Loss 5670357.000000(5673352.015464) | NFE Forward 26(26.5) | NFE Backward 186(188.5)
+tensor(1.0179, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0500 | Time 4.0249(3.9929) | Loss 5679487.000000(5673781.464382) | NFE Forward 26(26.5) | NFE Backward 192(188.8)
+tensor(1.0020, device='cuda:0')
+[TEST] Iter 0500 | Test Loss 5723158.000000 | NFE 26
+Skipping vis as data dimension is >2
+tensor(1.0191, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0501 | Time 4.0525(3.9971) | Loss 5661885.500000(5672948.746875) | NFE Forward 26(26.4) | NFE Backward 186(188.6)
+tensor(1.0149, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0502 | Time 4.0039(3.9976) | Loss 5662245.500000(5672199.519594) | NFE Forward 26(26.4) | NFE Backward 192(188.8)
+tensor(1.0061, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0503 | Time 4.0826(4.0035) | Loss 5674195.000000(5672339.203222) | NFE Forward 26(26.4) | NFE Backward 192(189.0)
+tensor(1.0076, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0504 | Time 4.0342(4.0057) | Loss 5676663.000000(5672641.868997) | NFE Forward 26(26.3) | NFE Backward 192(189.2)
+tensor(1.0157, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0505 | Time 4.0732(4.0104) | Loss 5667182.000000(5672259.678167) | NFE Forward 26(26.3) | NFE Backward 198(189.9)
+tensor(1.0091, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0506 | Time 4.0672(4.0144) | Loss 5638539.500000(5669899.265695) | NFE Forward 26(26.3) | NFE Backward 186(189.6)
+tensor(1.0149, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0507 | Time 4.0146(4.0144) | Loss 5657869.500000(5669057.182097) | NFE Forward 26(26.3) | NFE Backward 186(189.3)
+tensor(0.9961, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0508 | Time 3.8694(4.0042) | Loss 5677170.000000(5669625.079350) | NFE Forward 26(26.3) | NFE Backward 186(189.1)
+tensor(1.0034, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0509 | Time 4.1782(4.0164) | Loss 5667679.000000(5669488.853795) | NFE Forward 26(26.2) | NFE Backward 192(189.3)
+tensor(1.0003, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0510 | Time 4.1142(4.0233) | Loss 5698148.000000(5671494.994030) | NFE Forward 26(26.2) | NFE Backward 198(189.9)
+tensor(1.0231, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0511 | Time 3.9011(4.0147) | Loss 5694427.000000(5673100.234448) | NFE Forward 26(26.2) | NFE Backward 186(189.6)
+tensor(0.9992, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0512 | Time 4.2860(4.0337) | Loss 5679811.000000(5673569.988036) | NFE Forward 26(26.2) | NFE Backward 198(190.2)
+tensor(0.9828, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0513 | Time 4.3238(4.0540) | Loss 5627001.000000(5670310.158874) | NFE Forward 26(26.2) | NFE Backward 198(190.8)
+tensor(1.0136, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0514 | Time 3.9815(4.0489) | Loss 5633464.000000(5667730.927753) | NFE Forward 32(26.6) | NFE Backward 180(190.0)
+tensor(1.0104, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0515 | Time 4.2860(4.0655) | Loss 5699961.500000(5669987.067810) | NFE Forward 26(26.5) | NFE Backward 198(190.6)
+tensor(0.9945, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0516 | Time 4.0503(4.0645) | Loss 5668661.000000(5669894.243063) | NFE Forward 26(26.5) | NFE Backward 186(190.3)
+tensor(1.0179, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0517 | Time 4.0445(4.0631) | Loss 5688288.000000(5671181.806049) | NFE Forward 26(26.5) | NFE Backward 192(190.4)
+tensor(1.0080, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0518 | Time 4.1761(4.0710) | Loss 5640095.500000(5669005.764625) | NFE Forward 26(26.4) | NFE Backward 198(190.9)
+tensor(0.9830, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0519 | Time 4.2477(4.0833) | Loss 5634737.500000(5666606.986102) | NFE Forward 26(26.4) | NFE Backward 204(191.8)
+tensor(0.9857, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0520 | Time 4.3252(4.1003) | Loss 5691503.500000(5668349.742074) | NFE Forward 26(26.4) | NFE Backward 198(192.3)
+tensor(0.9926, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0521 | Time 4.0901(4.0996) | Loss 5658319.000000(5667647.590129) | NFE Forward 26(26.4) | NFE Backward 192(192.2)
+tensor(1.0018, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0522 | Time 4.2907(4.1129) | Loss 5652578.000000(5666592.718820) | NFE Forward 32(26.7) | NFE Backward 204(193.1)
+tensor(0.9915, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0523 | Time 4.0380(4.1077) | Loss 5648177.500000(5665303.653503) | NFE Forward 26(26.7) | NFE Backward 198(193.4)
+tensor(0.9976, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0524 | Time 4.2305(4.1163) | Loss 5646993.000000(5664021.907758) | NFE Forward 38(27.5) | NFE Backward 204(194.1)
+tensor(0.9889, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0525 | Time 4.0414(4.1111) | Loss 5695407.000000(5666218.864215) | NFE Forward 26(27.4) | NFE Backward 198(194.4)
+tensor(0.9883, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0526 | Time 4.1281(4.1122) | Loss 5657976.000000(5665641.863720) | NFE Forward 26(27.3) | NFE Backward 198(194.7)
+tensor(1.0048, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0527 | Time 4.1556(4.1153) | Loss 5665231.000000(5665613.103259) | NFE Forward 26(27.2) | NFE Backward 198(194.9)
+tensor(1.0061, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0528 | Time 4.2804(4.1268) | Loss 5645917.500000(5664234.411031) | NFE Forward 26(27.1) | NFE Backward 204(195.5)
+tensor(0.9980, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0529 | Time 3.8982(4.1108) | Loss 5646884.000000(5663019.882259) | NFE Forward 26(27.0) | NFE Backward 180(194.5)
+tensor(0.9990, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0530 | Time 4.2022(4.1172) | Loss 5636225.500000(5661144.275501) | NFE Forward 26(27.0) | NFE Backward 204(195.1)
+tensor(1.0156, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0531 | Time 4.1431(4.1190) | Loss 5624244.000000(5658561.256216) | NFE Forward 26(26.9) | NFE Backward 192(194.9)
+tensor(1.0100, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0532 | Time 4.1555(4.1216) | Loss 5671436.000000(5659462.488281) | NFE Forward 26(26.8) | NFE Backward 192(194.7)
+tensor(0.9979, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0533 | Time 4.1825(4.1259) | Loss 5720975.000000(5663768.364101) | NFE Forward 26(26.8) | NFE Backward 198(194.9)
+tensor(0.9853, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0534 | Time 4.0387(4.1198) | Loss 5675472.000000(5664587.618614) | NFE Forward 26(26.7) | NFE Backward 192(194.7)
+tensor(0.9833, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0535 | Time 4.1319(4.1206) | Loss 5644213.500000(5663161.430311) | NFE Forward 26(26.7) | NFE Backward 204(195.4)
+tensor(1.0021, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0536 | Time 4.0755(4.1175) | Loss 5656988.000000(5662729.290189) | NFE Forward 26(26.6) | NFE Backward 192(195.1)
+tensor(0.9864, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0537 | Time 4.0418(4.1122) | Loss 5659142.000000(5662478.179876) | NFE Forward 26(26.6) | NFE Backward 192(194.9)
+tensor(0.9879, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0538 | Time 4.3066(4.1258) | Loss 5695014.000000(5664755.687285) | NFE Forward 26(26.5) | NFE Backward 198(195.1)
+tensor(0.9955, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0539 | Time 4.3841(4.1439) | Loss 5656885.000000(5664204.739175) | NFE Forward 26(26.5) | NFE Backward 198(195.3)
+tensor(0.9852, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0540 | Time 4.1664(4.1454) | Loss 5636419.000000(5662259.737432) | NFE Forward 26(26.5) | NFE Backward 198(195.5)
+tensor(1.0001, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0541 | Time 4.4747(4.1685) | Loss 5643287.000000(5660931.645812) | NFE Forward 26(26.4) | NFE Backward 210(196.5)
+tensor(0.9944, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0542 | Time 4.2349(4.1731) | Loss 5645004.000000(5659816.710605) | NFE Forward 26(26.4) | NFE Backward 198(196.6)
+tensor(0.9862, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0543 | Time 4.0884(4.1672) | Loss 5668103.500000(5660396.785863) | NFE Forward 32(26.8) | NFE Backward 186(195.9)
+tensor(0.9704, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0544 | Time 4.0369(4.1581) | Loss 5695845.000000(5662878.160853) | NFE Forward 32(27.2) | NFE Backward 192(195.6)
+tensor(0.9788, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0545 | Time 4.2115(4.1618) | Loss 5650289.000000(5661996.919593) | NFE Forward 32(27.5) | NFE Backward 198(195.8)
+tensor(0.9913, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0546 | Time 4.4149(4.1795) | Loss 5649241.000000(5661104.005221) | NFE Forward 32(27.8) | NFE Backward 210(196.8)
+tensor(0.9906, device='cuda:0', grad_fn=<SubBackward0>)
+Iter 0547 | Time 4.2751(4.1862) | Loss 5674309.500000(5662028.389856) | NFE Forward 32(28.1) | NFE Backward 192(196.4)
+tensor(0.9618, device='cuda:0', grad_fn=<SubBackward0>)

@@ -14,7 +14,7 @@
 
 # Define input variables
 DEEPCYCLE_SCRIPT="/home/cstansbu/git_repositories/DeepCycle/DeepCycle.py"
-INPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/pseudotime.h5ad"
+INPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input.h5ad"
 GENE_LIST="/home/cstansbu/git_repositories/DeepCycle/go_annotation/GO_cell_cycle_annotation_human.txt"
 BASE_GENE="TOP2A"
 EXPRESSION_THRESHOLD="0.0001"

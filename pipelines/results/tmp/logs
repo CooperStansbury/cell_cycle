@@ -1,0 +1,2186 @@
+/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/main.py
+""" main.py
+
+Learns ODE from scrna data
+
+"""
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+
+from TrajectoryNet.lib.growth_net import GrowthNet
+from TrajectoryNet.lib import utils
+from TrajectoryNet.lib.visualize_flow import visualize_transform
+from TrajectoryNet.lib.viz_scrna import (
+    save_trajectory,
+    trajectory_to_video,
+    save_vectors,
+)
+from TrajectoryNet.lib.viz_scrna import save_trajectory_density
+
+
+# from train_misc import standard_normal_logprob
+from TrajectoryNet.train_misc import (
+    set_cnf_options,
+    count_nfe,
+    count_parameters,
+    count_total_time,
+    add_spectral_norm,
+    spectral_norm_power_iteration,
+    create_regularization_fns,
+    get_regularization,
+    append_regularization_to_log,
+    build_model_tabular,
+)
+
+from TrajectoryNet import dataset
+from TrajectoryNet.parse import parser
+
+matplotlib.use("Agg")
+
+
+def get_transforms(device, args, model, integration_times):
+    """
+    Given a list of integration points,
+    returns a function giving integration times
+    """
+
+    def sample_fn(z, logpz=None):
+        int_list = [
+            torch.tensor([it - args.time_scale, it]).type(torch.float32).to(device)
+            for it in integration_times
+        ]
+        if logpz is not None:
+            # TODO this works right?
+            for it in int_list:
+                z, logpz = model(z, logpz, integration_times=it, reverse=True)
+            return z, logpz
+        else:
+            for it in int_list:
+                z = model(z, integration_times=it, reverse=True)
+            return z
+
+    def density_fn(x, logpx=None):
+        int_list = [
+            torch.tensor([it - args.time_scale, it]).type(torch.float32).to(device)
+            for it in integration_times[::-1]
+        ]
+        if logpx is not None:
+            for it in int_list:
+                x, logpx = model(x, logpx, integration_times=it, reverse=False)
+            return x, logpx
+        else:
+            for it in int_list:
+                x = model(x, integration_times=it, reverse=False)
+            return x
+
+    return sample_fn, density_fn
+
+
+def compute_loss(device, args, model, growth_model, logger, full_data):
+    """
+    Compute loss by integrating backwards from the last time step
+    At each time step integrate back one time step, and concatenate that
+    to samples of the empirical distribution at that previous timestep
+    repeating over and over to calculate the likelihood of samples in
+    later timepoints iteratively, making sure that the ODE is evaluated
+    at every time step to calculate those later points.
+
+    The growth model is a single model of time independent cell growth /
+    death rate defined as a variation from uniform.
+    """
+
+    # Backward pass accumulating losses, previous state and deltas
+    deltas = []
+    zs = []
+    z = None
+    interp_loss = 0.0
+    for i, (itp, tp) in enumerate(zip(args.int_tps[::-1], args.timepoints[::-1])):
+        # tp counts down from last
+        integration_times = torch.tensor([itp - args.time_scale, itp])
+        integration_times = integration_times.type(torch.float32).to(device)
+        # integration_times.requires_grad = True
+
+        # load data and add noise
+        idx = args.data.sample_index(args.batch_size, tp)
+        x = args.data.get_data()[idx]
+        if args.training_noise > 0.0:
+            x += np.random.randn(*x.shape) * args.training_noise
+        x = torch.from_numpy(x).type(torch.float32).to(device)
+
+        if i > 0:
+            x = torch.cat((z, x))
+            zs.append(z)
+        zero = torch.zeros(x.shape[0], 1).to(x)
+
+        # transform to previous timepoint
+        z, delta_logp = model(x, zero, integration_times=integration_times)
+        deltas.append(delta_logp)
+
+        # Straightline regularization
+        # Integrate to random point at time t and assert close to (1 - t) * end + t * start
+        if args.interp_reg:
+            t = np.random.rand()
+            int_t = torch.tensor([itp - t * args.time_scale, itp])
+            int_t = int_t.type(torch.float32).to(device)
+            int_x = model(x, integration_times=int_t)
+            int_x = int_x.detach()
+            actual_int_x = x * (1 - t) + z * t
+            interp_loss += F.mse_loss(int_x, actual_int_x)
+    if args.interp_reg:
+        print("interp_loss", interp_loss)
+
+    logpz = args.data.base_density()(z)
+
+    # build growth rates
+    if args.use_growth:
+        growthrates = [torch.ones_like(logpz)]
+        for z_state, tp in zip(zs[::-1], args.timepoints[:-1]):
+            # Full state includes time parameter to growth_model
+            time_state = tp * torch.ones(z_state.shape[0], 1).to(z_state)
+            full_state = torch.cat([z_state, time_state], 1)
+            growthrates.append(growth_model(full_state))
+
+    # Accumulate losses
+    losses = []
+    logps = [logpz]
+    for i, delta_logp in enumerate(deltas[::-1]):
+        logpx = logps[-1] - delta_logp
+        if args.use_growth:
+            logpx += torch.log(torch.clamp(growthrates[i], 1e-4, 1e4))
+        logps.append(logpx[: -args.batch_size])
+        losses.append(-torch.mean(logpx[-args.batch_size :]))
+    losses = torch.stack(losses)
+    weights = torch.ones_like(losses).to(logpx)
+    if args.leaveout_timepoint >= 0:
+        weights[args.leaveout_timepoint] = 0
+    losses = torch.mean(losses * weights)
+
+    # Direction regularization
+    if args.vecint:
+        similarity_loss = 0
+        for i, (itp, tp) in enumerate(zip(args.int_tps, args.timepoints)):
+            itp = torch.tensor(itp).type(torch.float32).to(device)
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            v = args.data.get_velocity()[idx]
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            v = torch.from_numpy(v).type(torch.float32).to(device)
+            x += torch.randn_like(x) * 0.1
+            # Only penalizes at the time / place of visible samples
+            direction = -model.chain[0].odefunc.odefunc.diffeq(itp, x)
+            if args.use_magnitude:
+                similarity_loss += torch.mean(F.mse_loss(direction, v))
+            else:
+                similarity_loss -= torch.mean(F.cosine_similarity(direction, v))
+        logger.info(similarity_loss)
+        losses += similarity_loss * args.vecint
+
+    # Density regularization
+    if args.top_k_reg > 0:
+        density_loss = 0
+        tp_z_map = dict(zip(args.timepoints[:-1], zs[::-1]))
+        if args.leaveout_timepoint not in tp_z_map:
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            if args.training_noise > 0.0:
+                x += np.random.randn(*x.shape) * args.training_noise
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            t = np.random.rand()
+            int_t = torch.tensor([itp - t * args.time_scale, itp])
+            int_t = int_t.type(torch.float32).to(device)
+            int_x = model(x, integration_times=int_t)
+            samples_05 = int_x
+        else:
+            # If we are leaving out a timepoint the regularize there
+            samples_05 = tp_z_map[args.leaveout_timepoint]
+
+        # Calculate distance to 5 closest neighbors
+        # WARNING: This currently fails in the backward pass with cuda on pytorch < 1.4.0
+        #          works on CPU. Fixed in pytorch 1.5.0
+        # RuntimeError: CUDA error: invalid configuration argument
+        # The workaround is to run on cpu on pytorch <= 1.4.0 or upgrade
+        cdist = torch.cdist(samples_05, full_data)
+        values, _ = torch.topk(cdist, 5, dim=1, largest=False, sorted=False)
+        # Hinge loss
+        hinge_value = 0.1
+        values -= hinge_value
+        values[values < 0] = 0
+        density_loss = torch.mean(values)
+        print("Density Loss", density_loss.item())
+        losses += density_loss * args.top_k_reg
+    losses += interp_loss
+    return losses
+
+
+def train(
+    device, args, model, growth_model, regularization_coeffs, regularization_fns, logger
+):
+    optimizer = optim.Adam(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
+
+    time_meter = utils.RunningAverageMeter(0.93)
+    loss_meter = utils.RunningAverageMeter(0.93)
+    nfef_meter = utils.RunningAverageMeter(0.93)
+    nfeb_meter = utils.RunningAverageMeter(0.93)
+    tt_meter = utils.RunningAverageMeter(0.93)
+
+    full_data = (
+        torch.from_numpy(
+            args.data.get_data()[args.data.get_times() != args.leaveout_timepoint]
+        )
+        .type(torch.float32)
+        .to(device)
+    )
+
+    best_loss = float("inf")
+    if args.use_growth:
+        growth_model.eval()
+    end = time.time()
+    for itr in range(1, args.niters + 1):
+        model.train()
+        optimizer.zero_grad()
+
+        # Train
+        if args.spectral_norm:
+            spectral_norm_power_iteration(model, 1)
+
+        loss = compute_loss(device, args, model, growth_model, logger, full_data)
+        loss_meter.update(loss.item())
+
+        if len(regularization_coeffs) > 0:
+            # Only regularize on the last timepoint
+            reg_states = get_regularization(model, regularization_coeffs)
+            reg_loss = sum(
+                reg_state * coeff
+                for reg_state, coeff in zip(reg_states, regularization_coeffs)
+                if coeff != 0
+            )
+            loss = loss + reg_loss
+        total_time = count_total_time(model)
+        nfe_forward = count_nfe(model)
+
+        loss.backward()
+        optimizer.step()
+
+        # Eval
+        nfe_total = count_nfe(model)
+        nfe_backward = nfe_total - nfe_forward
+        nfef_meter.update(nfe_forward)
+        nfeb_meter.update(nfe_backward)
+        time_meter.update(time.time() - end)
+        tt_meter.update(total_time)
+
+        log_message = (
+            "Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f}) |"
+            " NFE Forward {:.0f}({:.1f})"
+            " | NFE Backward {:.0f}({:.1f})".format(
+                itr,
+                time_meter.val,
+                time_meter.avg,
+                loss_meter.val,
+                loss_meter.avg,
+                nfef_meter.val,
+                nfef_meter.avg,
+                nfeb_meter.val,
+                nfeb_meter.avg,
+            )
+        )
+        if len(regularization_coeffs) > 0:
+            log_message = append_regularization_to_log(
+                log_message, regularization_fns, reg_states
+            )
+        logger.info(log_message)
+
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                train_eval(
+                    device, args, model, growth_model, itr, best_loss, logger, full_data
+                )
+
+        if itr % args.viz_freq == 0:
+            if args.data.get_shape()[0] > 2:
+                logger.warning("Skipping vis as data dimension is >2")
+            else:
+                with torch.no_grad():
+                    visualize(device, args, model, itr)
+        if itr % args.save_freq == 0:
+            chkpt = {
+                "state_dict": model.state_dict(),
+            }
+            if args.use_growth:
+                chkpt.update({"growth_state_dict": growth_model.state_dict()})
+            utils.save_checkpoint(
+                chkpt,
+                args.save,
+                epoch=itr,
+            )
+        end = time.time()
+    logger.info("Training has finished.")
+
+
+def train_eval(device, args, model, growth_model, itr, best_loss, logger, full_data):
+    model.eval()
+    test_loss = compute_loss(device, args, model, growth_model, logger, full_data)
+    test_nfe = count_nfe(model)
+    log_message = "[TEST] Iter {:04d} | Test Loss {:.6f} |" " NFE {:.0f}".format(
+        itr, test_loss, test_nfe
+    )
+    logger.info(log_message)
+    utils.makedirs(args.save)
+    with open(os.path.join(args.save, "train_eval.csv"), "a") as f:
+        import csv
+
+        writer = csv.writer(f)
+        writer.writerow((itr, test_loss))
+
+    if test_loss.item() < best_loss:
+        best_loss = test_loss.item()
+        chkpt = {
+            "state_dict": model.state_dict(),
+        }
+        if args.use_growth:
+            chkpt.update({"growth_state_dict": growth_model.state_dict()})
+        torch.save(
+            chkpt,
+            os.path.join(args.save, "checkpt.pth"),
+        )
+
+
+def visualize(device, args, model, itr):
+    model.eval()
+    for i, tp in enumerate(args.timepoints):
+        idx = args.data.sample_index(args.viz_batch_size, tp)
+        p_samples = args.data.get_data()[idx]
+        sample_fn, density_fn = get_transforms(
+            device, args, model, args.int_tps[: i + 1]
+        )
+        plt.figure(figsize=(9, 3))
+        visualize_transform(
+            p_samples,
+            args.data.base_sample(),
+            args.data.base_density(),
+            transform=sample_fn,
+            inverse_transform=density_fn,
+            samples=True,
+            npts=100,
+            device=device,
+        )
+        fig_filename = os.path.join(
+            args.save, "figs", "{:04d}_{:01d}.jpg".format(itr, i)
+        )
+        utils.makedirs(os.path.dirname(fig_filename))
+        plt.savefig(fig_filename)
+        plt.close()
+
+
+def plot_output(device, args, model):
+    save_traj_dir = os.path.join(args.save, "trajectory")
+    # logger.info('Plotting trajectory to {}'.format(save_traj_dir))
+    data_samples = args.data.get_data()[args.data.sample_index(2000, 0)]
+    np.random.seed(42)
+    start_points = args.data.base_sample()(1000, 2)
+    # idx = args.data.sample_index(50, 0)
+    # start_points = args.data.get_data()[idx]
+    # start_points = torch.from_numpy(start_points).type(torch.float32)
+    save_vectors(
+        args.data.base_density(),
+        model,
+        start_points,
+        args.data.get_data(),
+        args.data.get_times(),
+        args.save,
+        skip_first=(not args.data.known_base_density()),
+        device=device,
+        end_times=args.int_tps,
+        ntimes=100,
+    )
+    save_trajectory(
+        args.data.base_density(),
+        args.data.base_sample(),
+        model,
+        data_samples,
+        save_traj_dir,
+        device=device,
+        end_times=args.int_tps,
+        ntimes=25,
+    )
+    trajectory_to_video(save_traj_dir)
+
+    density_dir = os.path.join(args.save, "density2")
+    save_trajectory_density(
+        args.data.base_density(),
+        model,
+        data_samples,
+        density_dir,
+        device=device,
+        end_times=args.int_tps,
+        ntimes=25,
+        memory=0.1,
+    )
+    trajectory_to_video(density_dir)
+
+
+def main(args):
+    # logger
+    print(args.no_display_loss)
+    utils.makedirs(args.save)
+    logger = utils.get_logger(
+        logpath=os.path.join(args.save, "logs"),
+        filepath=os.path.abspath(__file__),
+        displaying=~args.no_display_loss,
+    )
+
+    if args.layer_type == "blend":
+        logger.info("!! Setting time_scale from None to 1.0 for Blend layers.")
+        args.time_scale = 1.0
+
+    logger.info(args)
+
+    device = torch.device(
+        "cuda:" + str(args.gpu) if torch.cuda.is_available() else "cpu"
+    )
+    if args.use_cpu:
+        device = torch.device("cpu")
+
+    args.data = dataset.SCData.factory(args.dataset, args)
+
+    args.timepoints = args.data.get_unique_times()
+    # Use maximum timepoint to establish integration_times
+    # as some timepoints may be left out for validation etc.
+    args.int_tps = (np.arange(max(args.timepoints) + 1) + 1.0) * args.time_scale
+
+    regularization_fns, regularization_coeffs = create_regularization_fns(args)
+    model = build_model_tabular(args, args.data.get_shape()[0], regularization_fns).to(
+        device
+    )
+    growth_model = None
+    if args.use_growth:
+        if args.leaveout_timepoint == -1:
+            growth_model_path = "../data/externel/growth_model_v2.ckpt"
+        elif args.leaveout_timepoint in [1, 2, 3]:
+            assert args.max_dim == 5
+            growth_model_path = "../data/growth/model_%d" % args.leaveout_timepoint
+        else:
+            print("WARNING: Cannot use growth with this timepoint")
+
+        growth_model = torch.load(growth_model_path, map_location=device)
+    if args.spectral_norm:
+        add_spectral_norm(model)
+    set_cnf_options(args, model)
+
+    if args.test:
+        state_dict = torch.load(args.save + "/checkpt.pth", map_location=device)
+        model.load_state_dict(state_dict["state_dict"])
+        # if "growth_state_dict" not in state_dict:
+        #    print("error growth model note in save")
+        #    growth_model = None
+        # else:
+        #    checkpt = torch.load(args.save + "/checkpt.pth", map_location=device)
+        #    growth_model.load_state_dict(checkpt["growth_state_dict"])
+        # TODO can we load the arguments from the save?
+        # eval_utils.generate_samples(
+        #    device, args, model, growth_model, timepoint=args.leaveout_timepoint
+        # )
+        # with torch.no_grad():
+        #    evaluate(device, args, model, growth_model)
+    #    exit()
+    else:
+        logger.info(model)
+        n_param = count_parameters(model)
+        logger.info("Number of trainable parameters: {}".format(n_param))
+
+        train(
+            device,
+            args,
+            model,
+            growth_model,
+            regularization_coeffs,
+            regularization_fns,
+            logger,
+        )
+
+    if args.data.data.shape[1] == 2:
+        plot_output(device, args, model)
+
+
+if __name__ == "__main__":
+
+    args = parser.parse_args()
+    main(args)
+
+Namespace(test=False, dataset='/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input_by_phase.h5ad', use_growth=False, use_density=False, leaveout_timepoint=-1, layer_type='concatsquash', max_dim=10, dims='64-64-64', num_blocks=1, time_scale=0.5, train_T=True, divergence_fn='brute_force', nonlinearity='tanh', stochastic=False, alpha=0.0, solver='dopri5', atol=1e-05, rtol=1e-05, step_size=None, test_solver=None, test_atol=None, test_rtol=None, residual=False, rademacher=False, spectral_norm=False, batch_norm=False, bn_lag=0, niters=10000, num_workers=16, batch_size=5000, test_batch_size=1000, viz_batch_size=2000, lr=0.001, weight_decay=1e-05, l1int=None, l2int=None, sl2int=None, dl2int=None, dtl2int=None, JFrobint=None, JdiagFrobint=None, JoffdiagFrobint=None, vecint=None, use_magnitude=False, interp_reg=None, save='../results/tmp', save_freq=1000, viz_freq=100, viz_freq_growth=100, val_freq=100, log_freq=10, gpu=0, use_cpu=False, no_display_loss=True, top_k_reg=0.0, training_noise=0.1, embedding_name='pca', whiten=False)
+/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/main.py
+""" main.py
+
+Learns ODE from scrna data
+
+"""
+import os
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+
+import torch
+import torch.nn.functional as F
+import torch.optim as optim
+
+from TrajectoryNet.lib.growth_net import GrowthNet
+from TrajectoryNet.lib import utils
+from TrajectoryNet.lib.visualize_flow import visualize_transform
+from TrajectoryNet.lib.viz_scrna import (
+    save_trajectory,
+    trajectory_to_video,
+    save_vectors,
+)
+from TrajectoryNet.lib.viz_scrna import save_trajectory_density
+
+
+# from train_misc import standard_normal_logprob
+from TrajectoryNet.train_misc import (
+    set_cnf_options,
+    count_nfe,
+    count_parameters,
+    count_total_time,
+    add_spectral_norm,
+    spectral_norm_power_iteration,
+    create_regularization_fns,
+    get_regularization,
+    append_regularization_to_log,
+    build_model_tabular,
+)
+
+from TrajectoryNet import dataset
+from TrajectoryNet.parse import parser
+
+matplotlib.use("Agg")
+
+
+def get_transforms(device, args, model, integration_times):
+    """
+    Given a list of integration points,
+    returns a function giving integration times
+    """
+
+    def sample_fn(z, logpz=None):
+        int_list = [
+            torch.tensor([it - args.time_scale, it]).type(torch.float32).to(device)
+            for it in integration_times
+        ]
+        if logpz is not None:
+            # TODO this works right?
+            for it in int_list:
+                z, logpz = model(z, logpz, integration_times=it, reverse=True)
+            return z, logpz
+        else:
+            for it in int_list:
+                z = model(z, integration_times=it, reverse=True)
+            return z
+
+    def density_fn(x, logpx=None):
+        int_list = [
+            torch.tensor([it - args.time_scale, it]).type(torch.float32).to(device)
+            for it in integration_times[::-1]
+        ]
+        if logpx is not None:
+            for it in int_list:
+                x, logpx = model(x, logpx, integration_times=it, reverse=False)
+            return x, logpx
+        else:
+            for it in int_list:
+                x = model(x, integration_times=it, reverse=False)
+            return x
+
+    return sample_fn, density_fn
+
+
+def compute_loss(device, args, model, growth_model, logger, full_data):
+    """
+    Compute loss by integrating backwards from the last time step
+    At each time step integrate back one time step, and concatenate that
+    to samples of the empirical distribution at that previous timestep
+    repeating over and over to calculate the likelihood of samples in
+    later timepoints iteratively, making sure that the ODE is evaluated
+    at every time step to calculate those later points.
+
+    The growth model is a single model of time independent cell growth /
+    death rate defined as a variation from uniform.
+    """
+
+    # Backward pass accumulating losses, previous state and deltas
+    deltas = []
+    zs = []
+    z = None
+    interp_loss = 0.0
+    for i, (itp, tp) in enumerate(zip(args.int_tps[::-1], args.timepoints[::-1])):
+        # tp counts down from last
+        integration_times = torch.tensor([itp - args.time_scale, itp])
+        integration_times = integration_times.type(torch.float32).to(device)
+        # integration_times.requires_grad = True
+
+        # load data and add noise
+        idx = args.data.sample_index(args.batch_size, tp)
+        x = args.data.get_data()[idx]
+        if args.training_noise > 0.0:
+            x += np.random.randn(*x.shape) * args.training_noise
+        x = torch.from_numpy(x).type(torch.float32).to(device)
+
+        if i > 0:
+            x = torch.cat((z, x))
+            zs.append(z)
+        zero = torch.zeros(x.shape[0], 1).to(x)
+
+        # transform to previous timepoint
+        z, delta_logp = model(x, zero, integration_times=integration_times)
+        deltas.append(delta_logp)
+
+        # Straightline regularization
+        # Integrate to random point at time t and assert close to (1 - t) * end + t * start
+        if args.interp_reg:
+            t = np.random.rand()
+            int_t = torch.tensor([itp - t * args.time_scale, itp])
+            int_t = int_t.type(torch.float32).to(device)
+            int_x = model(x, integration_times=int_t)
+            int_x = int_x.detach()
+            actual_int_x = x * (1 - t) + z * t
+            interp_loss += F.mse_loss(int_x, actual_int_x)
+    if args.interp_reg:
+        print("interp_loss", interp_loss)
+
+    logpz = args.data.base_density()(z)
+
+    # build growth rates
+    if args.use_growth:
+        growthrates = [torch.ones_like(logpz)]
+        for z_state, tp in zip(zs[::-1], args.timepoints[:-1]):
+            # Full state includes time parameter to growth_model
+            time_state = tp * torch.ones(z_state.shape[0], 1).to(z_state)
+            full_state = torch.cat([z_state, time_state], 1)
+            growthrates.append(growth_model(full_state))
+
+    # Accumulate losses
+    losses = []
+    logps = [logpz]
+    for i, delta_logp in enumerate(deltas[::-1]):
+        logpx = logps[-1] - delta_logp
+        if args.use_growth:
+            logpx += torch.log(torch.clamp(growthrates[i], 1e-4, 1e4))
+        logps.append(logpx[: -args.batch_size])
+        losses.append(-torch.mean(logpx[-args.batch_size :]))
+    losses = torch.stack(losses)
+    weights = torch.ones_like(losses).to(logpx)
+    if args.leaveout_timepoint >= 0:
+        weights[args.leaveout_timepoint] = 0
+    losses = torch.mean(losses * weights)
+
+    # Direction regularization
+    if args.vecint:
+        similarity_loss = 0
+        for i, (itp, tp) in enumerate(zip(args.int_tps, args.timepoints)):
+            itp = torch.tensor(itp).type(torch.float32).to(device)
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            v = args.data.get_velocity()[idx]
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            v = torch.from_numpy(v).type(torch.float32).to(device)
+            x += torch.randn_like(x) * 0.1
+            # Only penalizes at the time / place of visible samples
+            direction = -model.chain[0].odefunc.odefunc.diffeq(itp, x)
+            if args.use_magnitude:
+                similarity_loss += torch.mean(F.mse_loss(direction, v))
+            else:
+                similarity_loss -= torch.mean(F.cosine_similarity(direction, v))
+        logger.info(similarity_loss)
+        losses += similarity_loss * args.vecint
+
+    # Density regularization
+    if args.top_k_reg > 0:
+        density_loss = 0
+        tp_z_map = dict(zip(args.timepoints[:-1], zs[::-1]))
+        if args.leaveout_timepoint not in tp_z_map:
+            idx = args.data.sample_index(args.batch_size, tp)
+            x = args.data.get_data()[idx]
+            if args.training_noise > 0.0:
+                x += np.random.randn(*x.shape) * args.training_noise
+            x = torch.from_numpy(x).type(torch.float32).to(device)
+            t = np.random.rand()
+            int_t = torch.tensor([itp - t * args.time_scale, itp])
+            int_t = int_t.type(torch.float32).to(device)
+            int_x = model(x, integration_times=int_t)
+            samples_05 = int_x
+        else:
+            # If we are leaving out a timepoint the regularize there
+            samples_05 = tp_z_map[args.leaveout_timepoint]
+
+        # Calculate distance to 5 closest neighbors
+        # WARNING: This currently fails in the backward pass with cuda on pytorch < 1.4.0
+        #          works on CPU. Fixed in pytorch 1.5.0
+        # RuntimeError: CUDA error: invalid configuration argument
+        # The workaround is to run on cpu on pytorch <= 1.4.0 or upgrade
+        cdist = torch.cdist(samples_05, full_data)
+        values, _ = torch.topk(cdist, 5, dim=1, largest=False, sorted=False)
+        # Hinge loss
+        hinge_value = 0.1
+        values -= hinge_value
+        values[values < 0] = 0
+        density_loss = torch.mean(values)
+        print("Density Loss", density_loss.item())
+        losses += density_loss * args.top_k_reg
+    losses += interp_loss
+    return losses
+
+
+def train(
+    device, args, model, growth_model, regularization_coeffs, regularization_fns, logger
+):
+    optimizer = optim.Adam(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
+
+    time_meter = utils.RunningAverageMeter(0.93)
+    loss_meter = utils.RunningAverageMeter(0.93)
+    nfef_meter = utils.RunningAverageMeter(0.93)
+    nfeb_meter = utils.RunningAverageMeter(0.93)
+    tt_meter = utils.RunningAverageMeter(0.93)
+
+    full_data = (
+        torch.from_numpy(
+            args.data.get_data()[args.data.get_times() != args.leaveout_timepoint]
+        )
+        .type(torch.float32)
+        .to(device)
+    )
+
+    best_loss = float("inf")
+    if args.use_growth:
+        growth_model.eval()
+    end = time.time()
+    for itr in range(1, args.niters + 1):
+        model.train()
+        optimizer.zero_grad()
+
+        # Train
+        if args.spectral_norm:
+            spectral_norm_power_iteration(model, 1)
+
+        loss = compute_loss(device, args, model, growth_model, logger, full_data)
+        loss_meter.update(loss.item())
+
+        if len(regularization_coeffs) > 0:
+            # Only regularize on the last timepoint
+            reg_states = get_regularization(model, regularization_coeffs)
+            reg_loss = sum(
+                reg_state * coeff
+                for reg_state, coeff in zip(reg_states, regularization_coeffs)
+                if coeff != 0
+            )
+            loss = loss + reg_loss
+        total_time = count_total_time(model)
+        nfe_forward = count_nfe(model)
+
+        loss.backward()
+        optimizer.step()
+
+        # Eval
+        nfe_total = count_nfe(model)
+        nfe_backward = nfe_total - nfe_forward
+        nfef_meter.update(nfe_forward)
+        nfeb_meter.update(nfe_backward)
+        time_meter.update(time.time() - end)
+        tt_meter.update(total_time)
+
+        log_message = (
+            "Iter {:04d} | Time {:.4f}({:.4f}) | Loss {:.6f}({:.6f}) |"
+            " NFE Forward {:.0f}({:.1f})"
+            " | NFE Backward {:.0f}({:.1f})".format(
+                itr,
+                time_meter.val,
+                time_meter.avg,
+                loss_meter.val,
+                loss_meter.avg,
+                nfef_meter.val,
+                nfef_meter.avg,
+                nfeb_meter.val,
+                nfeb_meter.avg,
+            )
+        )
+        if len(regularization_coeffs) > 0:
+            log_message = append_regularization_to_log(
+                log_message, regularization_fns, reg_states
+            )
+        logger.info(log_message)
+
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                train_eval(
+                    device, args, model, growth_model, itr, best_loss, logger, full_data
+                )
+
+        if itr % args.viz_freq == 0:
+            if args.data.get_shape()[0] > 2:
+                logger.warning("Skipping vis as data dimension is >2")
+            else:
+                with torch.no_grad():
+                    visualize(device, args, model, itr)
+        if itr % args.save_freq == 0:
+            chkpt = {
+                "state_dict": model.state_dict(),
+            }
+            if args.use_growth:
+                chkpt.update({"growth_state_dict": growth_model.state_dict()})
+            utils.save_checkpoint(
+                chkpt,
+                args.save,
+                epoch=itr,
+            )
+        end = time.time()
+    logger.info("Training has finished.")
+
+
+def train_eval(device, args, model, growth_model, itr, best_loss, logger, full_data):
+    model.eval()
+    test_loss = compute_loss(device, args, model, growth_model, logger, full_data)
+    test_nfe = count_nfe(model)
+    log_message = "[TEST] Iter {:04d} | Test Loss {:.6f} |" " NFE {:.0f}".format(
+        itr, test_loss, test_nfe
+    )
+    logger.info(log_message)
+    utils.makedirs(args.save)
+    with open(os.path.join(args.save, "train_eval.csv"), "a") as f:
+        import csv
+
+        writer = csv.writer(f)
+        writer.writerow((itr, test_loss))
+
+    if test_loss.item() < best_loss:
+        best_loss = test_loss.item()
+        chkpt = {
+            "state_dict": model.state_dict(),
+        }
+        if args.use_growth:
+            chkpt.update({"growth_state_dict": growth_model.state_dict()})
+        torch.save(
+            chkpt,
+            os.path.join(args.save, "checkpt.pth"),
+        )
+
+
+def visualize(device, args, model, itr):
+    model.eval()
+    for i, tp in enumerate(args.timepoints):
+        idx = args.data.sample_index(args.viz_batch_size, tp)
+        p_samples = args.data.get_data()[idx]
+        sample_fn, density_fn = get_transforms(
+            device, args, model, args.int_tps[: i + 1]
+        )
+        plt.figure(figsize=(9, 3))
+        visualize_transform(
+            p_samples,
+            args.data.base_sample(),
+            args.data.base_density(),
+            transform=sample_fn,
+            inverse_transform=density_fn,
+            samples=True,
+            npts=100,
+            device=device,
+        )
+        fig_filename = os.path.join(
+            args.save, "figs", "{:04d}_{:01d}.jpg".format(itr, i)
+        )
+        utils.makedirs(os.path.dirname(fig_filename))
+        plt.savefig(fig_filename)
+        plt.close()
+
+
+def plot_output(device, args, model):
+    save_traj_dir = os.path.join(args.save, "trajectory")
+    # logger.info('Plotting trajectory to {}'.format(save_traj_dir))
+    data_samples = args.data.get_data()[args.data.sample_index(2000, 0)]
+    np.random.seed(42)
+    start_points = args.data.base_sample()(1000, 2)
+    # idx = args.data.sample_index(50, 0)
+    # start_points = args.data.get_data()[idx]
+    # start_points = torch.from_numpy(start_points).type(torch.float32)
+    save_vectors(
+        args.data.base_density(),
+        model,
+        start_points,
+        args.data.get_data(),
+        args.data.get_times(),
+        args.save,
+        skip_first=(not args.data.known_base_density()),
+        device=device,
+        end_times=args.int_tps,
+        ntimes=100,
+    )
+    save_trajectory(
+        args.data.base_density(),
+        args.data.base_sample(),
+        model,
+        data_samples,
+        save_traj_dir,
+        device=device,
+        end_times=args.int_tps,
+        ntimes=25,
+    )
+    trajectory_to_video(save_traj_dir)
+
+    density_dir = os.path.join(args.save, "density2")
+    save_trajectory_density(
+        args.data.base_density(),
+        model,
+        data_samples,
+        density_dir,
+        device=device,
+        end_times=args.int_tps,
+        ntimes=25,
+        memory=0.1,
+    )
+    trajectory_to_video(density_dir)
+
+
+def main(args):
+    # logger
+    print(args.no_display_loss)
+    utils.makedirs(args.save)
+    logger = utils.get_logger(
+        logpath=os.path.join(args.save, "logs"),
+        filepath=os.path.abspath(__file__),
+        displaying=~args.no_display_loss,
+    )
+
+    if args.layer_type == "blend":
+        logger.info("!! Setting time_scale from None to 1.0 for Blend layers.")
+        args.time_scale = 1.0
+
+    logger.info(args)
+
+    device = torch.device(
+        "cuda:" + str(args.gpu) if torch.cuda.is_available() else "cpu"
+    )
+    if args.use_cpu:
+        device = torch.device("cpu")
+
+    args.data = dataset.SCData.factory(args.dataset, args)
+
+    args.timepoints = args.data.get_unique_times()
+    # Use maximum timepoint to establish integration_times
+    # as some timepoints may be left out for validation etc.
+    args.int_tps = (np.arange(max(args.timepoints) + 1) + 1.0) * args.time_scale
+
+    regularization_fns, regularization_coeffs = create_regularization_fns(args)
+    model = build_model_tabular(args, args.data.get_shape()[0], regularization_fns).to(
+        device
+    )
+    growth_model = None
+    if args.use_growth:
+        if args.leaveout_timepoint == -1:
+            growth_model_path = "../data/externel/growth_model_v2.ckpt"
+        elif args.leaveout_timepoint in [1, 2, 3]:
+            assert args.max_dim == 5
+            growth_model_path = "../data/growth/model_%d" % args.leaveout_timepoint
+        else:
+            print("WARNING: Cannot use growth with this timepoint")
+
+        growth_model = torch.load(growth_model_path, map_location=device)
+    if args.spectral_norm:
+        add_spectral_norm(model)
+    set_cnf_options(args, model)
+
+    if args.test:
+        state_dict = torch.load(args.save + "/checkpt.pth", map_location=device)
+        model.load_state_dict(state_dict["state_dict"])
+        # if "growth_state_dict" not in state_dict:
+        #    print("error growth model note in save")
+        #    growth_model = None
+        # else:
+        #    checkpt = torch.load(args.save + "/checkpt.pth", map_location=device)
+        #    growth_model.load_state_dict(checkpt["growth_state_dict"])
+        # TODO can we load the arguments from the save?
+        # eval_utils.generate_samples(
+        #    device, args, model, growth_model, timepoint=args.leaveout_timepoint
+        # )
+        # with torch.no_grad():
+        #    evaluate(device, args, model, growth_model)
+    #    exit()
+    else:
+        logger.info(model)
+        n_param = count_parameters(model)
+        logger.info("Number of trainable parameters: {}".format(n_param))
+
+        train(
+            device,
+            args,
+            model,
+            growth_model,
+            regularization_coeffs,
+            regularization_fns,
+            logger,
+        )
+
+    if args.data.data.shape[1] == 2:
+        plot_output(device, args, model)
+
+
+if __name__ == "__main__":
+
+    args = parser.parse_args()
+    main(args)
+
+Namespace(test=False, dataset='/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input_by_phase.h5ad', use_growth=False, use_density=False, leaveout_timepoint=-1, layer_type='concatsquash', max_dim=10, dims='64-64-64', num_blocks=1, time_scale=0.5, train_T=True, divergence_fn='brute_force', nonlinearity='tanh', stochastic=False, alpha=0.0, solver='dopri5', atol=1e-05, rtol=1e-05, step_size=None, test_solver=None, test_atol=None, test_rtol=None, residual=False, rademacher=False, spectral_norm=False, batch_norm=False, bn_lag=0, niters=10000, num_workers=16, batch_size=5000, test_batch_size=1000, viz_batch_size=2000, lr=0.001, weight_decay=1e-05, l1int=None, l2int=None, sl2int=None, dl2int=None, dtl2int=None, JFrobint=None, JdiagFrobint=None, JoffdiagFrobint=None, vecint=None, use_magnitude=False, interp_reg=None, save='../results/tmp', save_freq=1000, viz_freq=100, viz_freq_growth=100, val_freq=100, log_freq=10, gpu=0, use_cpu=False, no_display_loss=True, top_k_reg=0.0, training_noise=0.1, embedding_name='X_pca', whiten=False)
+SequentialFlow(
+  (chain): ModuleList(
+    (0): CNF(
+      (odefunc): RegularizedODEfunc(
+        (odefunc): ODEfunc(
+          (diffeq): ODEnet(
+            (layers): ModuleList(
+              (0): ConcatSquashLinear(
+                (_layer): Linear(in_features=10, out_features=64, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=64, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=64, bias=True)
+              )
+              (1-2): 2 x ConcatSquashLinear(
+                (_layer): Linear(in_features=64, out_features=64, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=64, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=64, bias=True)
+              )
+              (3): ConcatSquashLinear(
+                (_layer): Linear(in_features=64, out_features=10, bias=True)
+                (_hyper_bias): Linear(in_features=1, out_features=10, bias=False)
+                (_hyper_gate): Linear(in_features=1, out_features=10, bias=True)
+              )
+            )
+            (activation_fns): ModuleList(
+              (0-2): 3 x Tanh()
+            )
+          )
+        )
+      )
+    )
+  )
+)
+Number of trainable parameters: 10281
+Iter 0001 | Time 2.2503(2.2503) | Loss 5715115.000000(5715115.000000) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0002 | Time 1.1394(2.1726) | Loss 5714464.000000(5715069.430000) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0003 | Time 1.1385(2.1002) | Loss 5704573.500000(5714334.714900) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0004 | Time 1.1384(2.0329) | Loss 5709403.500000(5713989.529857) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0005 | Time 1.1385(1.9703) | Loss 5668315.500000(5710792.347767) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0006 | Time 1.1382(1.9120) | Loss 5684459.500000(5708949.048423) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0007 | Time 1.1402(1.8580) | Loss 5686270.000000(5707361.515034) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0008 | Time 1.1385(1.8076) | Loss 5689172.000000(5706088.248981) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0009 | Time 1.1405(1.7609) | Loss 5747166.000000(5708963.691553) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0010 | Time 1.1425(1.7176) | Loss 5721272.000000(5709825.273144) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0011 | Time 1.1379(1.6771) | Loss 5743225.500000(5712163.289024) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0012 | Time 1.1396(1.6394) | Loss 5705761.500000(5711715.163792) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0013 | Time 1.1384(1.6044) | Loss 5698958.000000(5710822.162327) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0014 | Time 1.1386(1.5718) | Loss 5691317.500000(5709456.835964) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0015 | Time 1.1360(1.5413) | Loss 5722849.000000(5710394.287446) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0016 | Time 1.1464(1.5136) | Loss 5656639.500000(5706631.452325) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0017 | Time 1.1354(1.4871) | Loss 5636059.000000(5701691.380662) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0018 | Time 1.1368(1.4626) | Loss 5634284.000000(5696972.864016) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0019 | Time 1.1342(1.4396) | Loss 5742867.500000(5700185.488535) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0020 | Time 1.1358(1.4184) | Loss 5696148.000000(5699902.864337) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0021 | Time 1.1369(1.3987) | Loss 5690496.000000(5699244.383834) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0022 | Time 1.2174(1.3860) | Loss 5712399.000000(5700165.206965) | NFE Forward 14(14.0) | NFE Backward 69(63.4)
+Iter 0023 | Time 1.2167(1.3741) | Loss 5691583.500000(5699564.487478) | NFE Forward 14(14.0) | NFE Backward 69(63.8)
+Iter 0024 | Time 1.2174(1.3632) | Loss 5690955.000000(5698961.823354) | NFE Forward 14(14.0) | NFE Backward 69(64.2)
+Iter 0025 | Time 1.2165(1.3529) | Loss 5725565.500000(5700824.080720) | NFE Forward 14(14.0) | NFE Backward 69(64.5)
+Iter 0026 | Time 1.2179(1.3434) | Loss 5715033.000000(5701818.705069) | NFE Forward 14(14.0) | NFE Backward 69(64.8)
+Iter 0027 | Time 1.2195(1.3348) | Loss 5621526.000000(5696198.215714) | NFE Forward 14(14.0) | NFE Backward 69(65.1)
+Iter 0028 | Time 1.2183(1.3266) | Loss 5723767.500000(5698128.065614) | NFE Forward 14(14.0) | NFE Backward 69(65.4)
+Iter 0029 | Time 1.2175(1.3190) | Loss 5696504.000000(5698014.381021) | NFE Forward 14(14.0) | NFE Backward 69(65.6)
+Iter 0030 | Time 1.2231(1.3123) | Loss 5684479.500000(5697066.939350) | NFE Forward 14(14.0) | NFE Backward 69(65.9)
+Iter 0031 | Time 1.2236(1.3061) | Loss 5744426.000000(5700382.073595) | NFE Forward 14(14.0) | NFE Backward 69(66.1)
+Iter 0032 | Time 1.3040(1.3059) | Loss 5661157.500000(5697636.353444) | NFE Forward 14(14.0) | NFE Backward 75(66.7)
+Iter 0033 | Time 1.3047(1.3058) | Loss 5737089.500000(5700398.073703) | NFE Forward 14(14.0) | NFE Backward 75(67.3)
+Iter 0034 | Time 1.3060(1.3058) | Loss 5717347.500000(5701584.533543) | NFE Forward 14(14.0) | NFE Backward 75(67.8)
+Iter 0035 | Time 1.3048(1.3058) | Loss 5692711.000000(5700963.386195) | NFE Forward 14(14.0) | NFE Backward 75(68.3)
+Iter 0036 | Time 1.3083(1.3060) | Loss 5710103.000000(5701603.159162) | NFE Forward 14(14.0) | NFE Backward 75(68.8)
+Iter 0037 | Time 1.3063(1.3060) | Loss 5693236.000000(5701017.458020) | NFE Forward 14(14.0) | NFE Backward 75(69.2)
+Iter 0038 | Time 1.3046(1.3059) | Loss 5688181.500000(5700118.940959) | NFE Forward 14(14.0) | NFE Backward 75(69.6)
+Iter 0039 | Time 1.3061(1.3059) | Loss 5688547.500000(5699308.940092) | NFE Forward 14(14.0) | NFE Backward 75(70.0)
+Iter 0040 | Time 1.3059(1.3059) | Loss 5704970.000000(5699705.214285) | NFE Forward 14(14.0) | NFE Backward 75(70.4)
+Iter 0041 | Time 1.3058(1.3059) | Loss 5670615.000000(5697668.899285) | NFE Forward 14(14.0) | NFE Backward 75(70.7)
+Iter 0042 | Time 1.2247(1.3002) | Loss 5675913.000000(5696145.986335) | NFE Forward 14(14.0) | NFE Backward 69(70.6)
+Iter 0043 | Time 1.3050(1.3005) | Loss 5695627.000000(5696109.657292) | NFE Forward 14(14.0) | NFE Backward 75(70.9)
+Iter 0044 | Time 1.3044(1.3008) | Loss 5721847.000000(5697911.271282) | NFE Forward 14(14.0) | NFE Backward 75(71.2)
+Iter 0045 | Time 1.3886(1.3070) | Loss 5687857.500000(5697207.507292) | NFE Forward 14(14.0) | NFE Backward 63(70.6)
+Iter 0046 | Time 1.1414(1.2954) | Loss 5743655.500000(5700458.866781) | NFE Forward 14(14.0) | NFE Backward 63(70.1)
+Iter 0047 | Time 1.1393(1.2844) | Loss 5701780.000000(5700551.346107) | NFE Forward 14(14.0) | NFE Backward 63(69.6)
+Iter 0048 | Time 1.1427(1.2745) | Loss 5717251.000000(5701720.321879) | NFE Forward 14(14.0) | NFE Backward 63(69.1)
+Iter 0049 | Time 1.1396(1.2651) | Loss 5651084.000000(5698175.779348) | NFE Forward 14(14.0) | NFE Backward 63(68.7)
+Iter 0050 | Time 1.1394(1.2563) | Loss 5639153.000000(5694044.184793) | NFE Forward 14(14.0) | NFE Backward 63(68.3)
+Iter 0051 | Time 1.1432(1.2484) | Loss 5661890.000000(5691793.391858) | NFE Forward 14(14.0) | NFE Backward 63(67.9)
+Iter 0052 | Time 1.1401(1.2408) | Loss 5670643.000000(5690312.864428) | NFE Forward 14(14.0) | NFE Backward 63(67.6)
+Iter 0053 | Time 1.1419(1.2339) | Loss 5691131.000000(5690370.133918) | NFE Forward 14(14.0) | NFE Backward 63(67.3)
+Iter 0054 | Time 1.1407(1.2273) | Loss 5715577.000000(5692134.614544) | NFE Forward 14(14.0) | NFE Backward 63(67.0)
+Iter 0055 | Time 1.1408(1.2213) | Loss 5666855.000000(5690365.041526) | NFE Forward 14(14.0) | NFE Backward 63(66.7)
+Iter 0056 | Time 1.1402(1.2156) | Loss 5651981.000000(5687678.158619) | NFE Forward 14(14.0) | NFE Backward 63(66.4)
+Iter 0057 | Time 1.1413(1.2104) | Loss 5729134.000000(5690580.067515) | NFE Forward 14(14.0) | NFE Backward 63(66.2)
+Iter 0058 | Time 1.1432(1.2057) | Loss 5710474.000000(5691972.642789) | NFE Forward 14(14.0) | NFE Backward 63(66.0)
+Iter 0059 | Time 1.1404(1.2011) | Loss 5643265.500000(5688563.142794) | NFE Forward 14(14.0) | NFE Backward 63(65.8)
+Iter 0060 | Time 1.1405(1.1969) | Loss 5696389.500000(5689110.987799) | NFE Forward 14(14.0) | NFE Backward 63(65.6)
+Iter 0061 | Time 1.1416(1.1930) | Loss 5714221.000000(5690868.688653) | NFE Forward 14(14.0) | NFE Backward 63(65.4)
+Iter 0062 | Time 1.1409(1.1894) | Loss 5747673.500000(5694845.025447) | NFE Forward 14(14.0) | NFE Backward 63(65.2)
+Iter 0063 | Time 1.1411(1.1860) | Loss 5741021.500000(5698077.378666) | NFE Forward 14(14.0) | NFE Backward 63(65.1)
+Iter 0064 | Time 1.1411(1.1828) | Loss 5709763.000000(5698895.372159) | NFE Forward 14(14.0) | NFE Backward 63(64.9)
+Iter 0065 | Time 1.1425(1.1800) | Loss 5664926.000000(5696517.516108) | NFE Forward 14(14.0) | NFE Backward 63(64.8)
+Iter 0066 | Time 1.1411(1.1773) | Loss 5762890.000000(5701163.589980) | NFE Forward 14(14.0) | NFE Backward 63(64.7)
+Iter 0067 | Time 1.1410(1.1748) | Loss 5731555.500000(5703291.023682) | NFE Forward 14(14.0) | NFE Backward 63(64.5)
+Iter 0068 | Time 1.1436(1.1726) | Loss 5694178.000000(5702653.112024) | NFE Forward 14(14.0) | NFE Backward 63(64.4)
+Iter 0069 | Time 1.1401(1.1703) | Loss 5696715.000000(5702237.444182) | NFE Forward 14(14.0) | NFE Backward 63(64.3)
+Iter 0070 | Time 1.1412(1.1683) | Loss 5711781.000000(5702905.493090) | NFE Forward 14(14.0) | NFE Backward 63(64.2)
+Iter 0071 | Time 1.1409(1.1664) | Loss 5692315.500000(5702164.193573) | NFE Forward 14(14.0) | NFE Backward 63(64.2)
+Iter 0072 | Time 1.1393(1.1645) | Loss 5686413.500000(5701061.645023) | NFE Forward 14(14.0) | NFE Backward 63(64.1)
+Iter 0073 | Time 1.1405(1.1628) | Loss 5698048.000000(5700850.689872) | NFE Forward 14(14.0) | NFE Backward 63(64.0)
+Iter 0074 | Time 1.1409(1.1613) | Loss 5687258.000000(5699899.201581) | NFE Forward 14(14.0) | NFE Backward 63(63.9)
+Iter 0075 | Time 1.1392(1.1597) | Loss 5708254.000000(5700484.037470) | NFE Forward 14(14.0) | NFE Backward 63(63.9)
+Iter 0076 | Time 1.1432(1.1586) | Loss 5677471.000000(5698873.124847) | NFE Forward 14(14.0) | NFE Backward 63(63.8)
+Iter 0077 | Time 1.1404(1.1573) | Loss 5700803.000000(5699008.216108) | NFE Forward 14(14.0) | NFE Backward 63(63.7)
+Iter 0078 | Time 1.1424(1.1562) | Loss 5668008.000000(5696838.200980) | NFE Forward 14(14.0) | NFE Backward 63(63.7)
+Iter 0079 | Time 1.1406(1.1551) | Loss 5706663.500000(5697525.971912) | NFE Forward 14(14.0) | NFE Backward 63(63.6)
+Iter 0080 | Time 1.1402(1.1541) | Loss 5726139.000000(5699528.883878) | NFE Forward 14(14.0) | NFE Backward 63(63.6)
+Iter 0081 | Time 1.1421(1.1533) | Loss 5680319.000000(5698184.192006) | NFE Forward 14(14.0) | NFE Backward 63(63.6)
+Iter 0082 | Time 1.1407(1.1524) | Loss 5618328.000000(5692594.258566) | NFE Forward 14(14.0) | NFE Backward 63(63.5)
+Iter 0083 | Time 1.1431(1.1517) | Loss 5665067.000000(5690667.350466) | NFE Forward 14(14.0) | NFE Backward 63(63.5)
+Iter 0084 | Time 1.1399(1.1509) | Loss 5613930.000000(5685295.735934) | NFE Forward 14(14.0) | NFE Backward 63(63.4)
+Iter 0085 | Time 1.1407(1.1502) | Loss 5676248.000000(5684662.394418) | NFE Forward 14(14.0) | NFE Backward 63(63.4)
+Iter 0086 | Time 1.1438(1.1497) | Loss 5684763.000000(5684669.436809) | NFE Forward 14(14.0) | NFE Backward 63(63.4)
+Iter 0087 | Time 1.1415(1.1492) | Loss 5659543.000000(5682910.586232) | NFE Forward 14(14.0) | NFE Backward 63(63.4)
+Iter 0088 | Time 1.1418(1.1486) | Loss 5679694.000000(5682685.425196) | NFE Forward 14(14.0) | NFE Backward 63(63.3)
+Iter 0089 | Time 1.1412(1.1481) | Loss 5720241.500000(5685314.350432) | NFE Forward 14(14.0) | NFE Backward 63(63.3)
+Iter 0090 | Time 1.1402(1.1476) | Loss 5643628.000000(5682396.305902) | NFE Forward 14(14.0) | NFE Backward 63(63.3)
+Iter 0091 | Time 1.1424(1.1472) | Loss 5694749.500000(5683261.029489) | NFE Forward 14(14.0) | NFE Backward 63(63.3)
+Iter 0092 | Time 1.1409(1.1468) | Loss 5664455.000000(5681944.607425) | NFE Forward 14(14.0) | NFE Backward 63(63.3)
+Iter 0093 | Time 1.1424(1.1465) | Loss 5673704.000000(5681367.764905) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0094 | Time 1.1413(1.1461) | Loss 5650397.500000(5679199.846362) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0095 | Time 1.1407(1.1457) | Loss 5688728.000000(5679866.817116) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0096 | Time 1.1410(1.1454) | Loss 5717567.000000(5682505.829918) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0097 | Time 1.1403(1.1450) | Loss 5652690.000000(5680418.721824) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0098 | Time 1.1421(1.1448) | Loss 5687889.500000(5680941.676296) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0099 | Time 1.1413(1.1446) | Loss 5676586.000000(5680636.778956) | NFE Forward 14(14.0) | NFE Backward 63(63.2)
+Iter 0100 | Time 1.1396(1.1442) | Loss 5705374.000000(5682368.384429) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+[TEST] Iter 0100 | Test Loss 5701924.000000 | NFE 14
+Skipping vis as data dimension is >2
+Iter 0101 | Time 1.1454(1.1443) | Loss 5701943.500000(5683738.642519) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0102 | Time 1.1417(1.1441) | Loss 5655331.000000(5681750.107542) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0103 | Time 1.1432(1.1441) | Loss 5713438.000000(5683968.260014) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0104 | Time 1.1403(1.1438) | Loss 5698651.000000(5684996.051813) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0105 | Time 1.1401(1.1435) | Loss 5703657.500000(5686302.353186) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0106 | Time 1.1417(1.1434) | Loss 5740273.500000(5690080.333463) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0107 | Time 1.1413(1.1433) | Loss 5677255.500000(5689182.595121) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0108 | Time 1.1412(1.1431) | Loss 5679419.500000(5688499.178462) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0109 | Time 1.1412(1.1430) | Loss 5735825.000000(5691811.985970) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0110 | Time 1.1402(1.1428) | Loss 5679945.000000(5690981.296952) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0111 | Time 1.1424(1.1428) | Loss 5679433.500000(5690172.951166) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0112 | Time 1.1411(1.1426) | Loss 5716966.000000(5692048.464584) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0113 | Time 1.1420(1.1426) | Loss 5679866.000000(5691195.692063) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0114 | Time 1.1399(1.1424) | Loss 5727916.000000(5693766.113619) | NFE Forward 14(14.0) | NFE Backward 63(63.1)
+Iter 0115 | Time 1.1409(1.1423) | Loss 5668961.000000(5692029.755665) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0116 | Time 1.1414(1.1422) | Loss 5724678.000000(5694315.132769) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0117 | Time 1.1401(1.1421) | Loss 5724724.000000(5696443.753475) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0118 | Time 1.1423(1.1421) | Loss 5693137.000000(5696212.280732) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0119 | Time 1.1417(1.1421) | Loss 5693651.000000(5696032.991080) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0120 | Time 1.1421(1.1421) | Loss 5699476.000000(5696274.001705) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0121 | Time 1.1413(1.1420) | Loss 5684159.500000(5695425.986586) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0122 | Time 1.1391(1.1418) | Loss 5698452.000000(5695637.807525) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0123 | Time 1.1405(1.1417) | Loss 5684372.000000(5694849.200998) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0124 | Time 1.1432(1.1418) | Loss 5658565.500000(5692309.341928) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0125 | Time 1.1405(1.1417) | Loss 5693582.000000(5692398.427993) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0126 | Time 1.1434(1.1419) | Loss 5705186.000000(5693293.558033) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0127 | Time 1.1415(1.1418) | Loss 5689193.500000(5693006.553971) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0128 | Time 1.1403(1.1417) | Loss 5654839.000000(5690334.825193) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0129 | Time 1.1420(1.1417) | Loss 5707323.500000(5691524.032430) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0130 | Time 1.1415(1.1417) | Loss 5725826.000000(5693925.170160) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0131 | Time 1.1417(1.1417) | Loss 5712279.500000(5695209.973248) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0132 | Time 1.1413(1.1417) | Loss 5719319.000000(5696897.605121) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0133 | Time 1.1413(1.1417) | Loss 5672838.000000(5695213.432763) | NFE Forward 14(14.0) | NFE Backward 63(63.0)
+Iter 0134 | Time 1.1803(1.1444) | Loss 5684476.000000(5694461.812469) | NFE Forward 20(14.4) | NFE Backward 63(63.0)
+Iter 0135 | Time 1.1774(1.1467) | Loss 5725775.000000(5696653.735596) | NFE Forward 20(14.8) | NFE Backward 63(63.0)
+Iter 0136 | Time 1.2142(1.1514) | Loss 5681225.500000(5695573.759105) | NFE Forward 20(15.2) | NFE Backward 63(63.0)
+Iter 0137 | Time 1.1777(1.1533) | Loss 5648103.000000(5692250.805967) | NFE Forward 20(15.5) | NFE Backward 63(63.0)
+Iter 0138 | Time 1.1787(1.1550) | Loss 5704255.500000(5693091.134550) | NFE Forward 20(15.8) | NFE Backward 63(63.0)
+Iter 0139 | Time 1.1801(1.1568) | Loss 5649799.500000(5690060.720131) | NFE Forward 20(16.1) | NFE Backward 63(63.0)
+Iter 0140 | Time 1.2136(1.1608) | Loss 5694738.000000(5690388.129722) | NFE Forward 20(16.4) | NFE Backward 63(63.0)
+Iter 0141 | Time 1.1811(1.1622) | Loss 5735689.500000(5693559.225641) | NFE Forward 20(16.6) | NFE Backward 63(63.0)
+Iter 0142 | Time 1.1780(1.1633) | Loss 5709045.500000(5694643.264846) | NFE Forward 20(16.9) | NFE Backward 63(63.0)
+Iter 0143 | Time 1.2145(1.1669) | Loss 5728006.000000(5696978.656307) | NFE Forward 20(17.1) | NFE Backward 63(63.0)
+Iter 0144 | Time 1.2176(1.1704) | Loss 5665831.500000(5694798.355366) | NFE Forward 20(17.3) | NFE Backward 63(63.0)
+Iter 0145 | Time 1.2140(1.1735) | Loss 5753845.000000(5698931.620490) | NFE Forward 20(17.5) | NFE Backward 63(63.0)
+Iter 0146 | Time 1.2161(1.1765) | Loss 5737446.000000(5701627.627056) | NFE Forward 20(17.7) | NFE Backward 63(63.0)
+Iter 0147 | Time 1.2159(1.1792) | Loss 5596431.500000(5694263.898162) | NFE Forward 20(17.8) | NFE Backward 63(63.0)
+Iter 0148 | Time 1.2141(1.1817) | Loss 5672043.000000(5692708.435291) | NFE Forward 20(18.0) | NFE Backward 63(63.0)
+Iter 0149 | Time 1.2170(1.1841) | Loss 5749789.500000(5696704.109820) | NFE Forward 20(18.1) | NFE Backward 63(63.0)
+Iter 0150 | Time 1.2142(1.1862) | Loss 5739132.000000(5699674.062133) | NFE Forward 20(18.3) | NFE Backward 63(63.0)
+Iter 0151 | Time 1.2166(1.1884) | Loss 5702345.500000(5699861.062784) | NFE Forward 20(18.4) | NFE Backward 63(63.0)
+Iter 0152 | Time 1.2154(1.1903) | Loss 5702995.000000(5700080.438389) | NFE Forward 20(18.5) | NFE Backward 63(63.0)
+Iter 0153 | Time 1.2155(1.1920) | Loss 5689017.000000(5699305.997701) | NFE Forward 20(18.6) | NFE Backward 63(63.0)
+Iter 0154 | Time 1.2517(1.1962) | Loss 5693932.000000(5698929.817862) | NFE Forward 20(18.7) | NFE Backward 63(63.0)
+Iter 0155 | Time 1.2140(1.1975) | Loss 5622049.000000(5693548.160612) | NFE Forward 20(18.8) | NFE Backward 63(63.0)
+Iter 0156 | Time 1.2164(1.1988) | Loss 5665305.500000(5691571.174369) | NFE Forward 20(18.9) | NFE Backward 63(63.0)
+Iter 0157 | Time 1.2150(1.1999) | Loss 5660427.500000(5689391.117163) | NFE Forward 20(18.9) | NFE Backward 63(63.0)
+Iter 0158 | Time 1.2179(1.2012) | Loss 5692259.000000(5689591.868962) | NFE Forward 20(19.0) | NFE Backward 63(63.0)
+Iter 0159 | Time 1.2147(1.2021) | Loss 5675899.500000(5688633.403135) | NFE Forward 20(19.1) | NFE Backward 63(63.0)
+Iter 0160 | Time 1.2517(1.2056) | Loss 5685357.500000(5688404.089915) | NFE Forward 20(19.2) | NFE Backward 63(63.0)
+Iter 0161 | Time 1.2172(1.2064) | Loss 5672726.000000(5687306.623621) | NFE Forward 20(19.2) | NFE Backward 63(63.0)
+Iter 0162 | Time 1.2514(1.2096) | Loss 5633639.500000(5683549.924968) | NFE Forward 20(19.3) | NFE Backward 63(63.0)
+Iter 0163 | Time 1.2166(1.2100) | Loss 5696252.000000(5684439.070220) | NFE Forward 20(19.3) | NFE Backward 63(63.0)
+Iter 0164 | Time 1.2524(1.2130) | Loss 5640754.000000(5681381.115304) | NFE Forward 20(19.4) | NFE Backward 63(63.0)
+Iter 0165 | Time 1.2510(1.2157) | Loss 5694160.000000(5682275.637233) | NFE Forward 20(19.4) | NFE Backward 63(63.0)
+Iter 0166 | Time 1.2168(1.2157) | Loss 5665111.000000(5681074.112627) | NFE Forward 20(19.5) | NFE Backward 63(63.0)
+Iter 0167 | Time 1.2151(1.2157) | Loss 5674171.000000(5680590.894743) | NFE Forward 20(19.5) | NFE Backward 63(63.0)
+Iter 0168 | Time 1.2543(1.2184) | Loss 5658367.500000(5679035.257111) | NFE Forward 20(19.5) | NFE Backward 63(63.0)
+Iter 0169 | Time 1.2156(1.2182) | Loss 5681528.000000(5679209.749113) | NFE Forward 20(19.6) | NFE Backward 63(63.0)
+Iter 0170 | Time 1.2527(1.2206) | Loss 5721326.000000(5682157.886675) | NFE Forward 20(19.6) | NFE Backward 63(63.0)
+Iter 0171 | Time 1.2516(1.2228) | Loss 5697057.000000(5683200.824608) | NFE Forward 20(19.6) | NFE Backward 63(63.0)
+Iter 0172 | Time 1.2514(1.2248) | Loss 5677643.000000(5682811.776885) | NFE Forward 20(19.6) | NFE Backward 63(63.0)
+Iter 0173 | Time 1.2522(1.2267) | Loss 5635872.000000(5679525.992503) | NFE Forward 20(19.7) | NFE Backward 63(63.0)
+Iter 0174 | Time 1.2504(1.2284) | Loss 5759772.000000(5685143.213028) | NFE Forward 20(19.7) | NFE Backward 63(63.0)
+Iter 0175 | Time 1.2537(1.2301) | Loss 5703083.000000(5686398.998116) | NFE Forward 20(19.7) | NFE Backward 63(63.0)
+Iter 0176 | Time 1.2518(1.2317) | Loss 5673633.500000(5685505.413248) | NFE Forward 20(19.7) | NFE Backward 63(63.0)
+Iter 0177 | Time 1.2143(1.2304) | Loss 5636478.000000(5682073.494321) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0178 | Time 1.2524(1.2320) | Loss 5775169.000000(5688590.179718) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0179 | Time 1.2520(1.2334) | Loss 5722398.000000(5690956.727138) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0180 | Time 1.2528(1.2347) | Loss 5670060.000000(5689493.956238) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0181 | Time 1.2511(1.2359) | Loss 5693485.500000(5689773.364302) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0182 | Time 1.2496(1.2368) | Loss 5705476.000000(5690872.548801) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0183 | Time 1.2170(1.2355) | Loss 5689547.000000(5690779.760385) | NFE Forward 20(19.8) | NFE Backward 63(63.0)
+Iter 0184 | Time 1.2525(1.2366) | Loss 5749919.500000(5694919.542158) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0185 | Time 1.2538(1.2378) | Loss 5715182.000000(5696337.914207) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0186 | Time 1.2512(1.2388) | Loss 5694599.000000(5696216.190212) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0187 | Time 1.2525(1.2397) | Loss 5623441.000000(5691121.926897) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0188 | Time 1.2518(1.2406) | Loss 5668206.000000(5689517.812014) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0189 | Time 1.2506(1.2413) | Loss 5686385.000000(5689298.515173) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0190 | Time 1.2523(1.2421) | Loss 5656467.500000(5687000.344111) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0191 | Time 1.2515(1.2427) | Loss 5703487.500000(5688154.445024) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0192 | Time 1.2532(1.2435) | Loss 5666064.000000(5686608.113872) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0193 | Time 1.2861(1.2464) | Loss 5650245.000000(5684062.695901) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0194 | Time 1.2518(1.2468) | Loss 5654060.000000(5681962.507188) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0195 | Time 1.2550(1.2474) | Loss 5694184.000000(5682818.011685) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0196 | Time 1.2522(1.2477) | Loss 5672959.500000(5682127.915867) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0197 | Time 1.2527(1.2481) | Loss 5685788.000000(5682384.121756) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0198 | Time 1.2531(1.2484) | Loss 5636883.000000(5679199.043233) | NFE Forward 20(19.9) | NFE Backward 63(63.0)
+Iter 0199 | Time 1.2566(1.2490) | Loss 5596404.000000(5673403.390207) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0200 | Time 1.2556(1.2495) | Loss 5714816.000000(5676302.272892) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+[TEST] Iter 0200 | Test Loss 5657096.000000 | NFE 20
+Skipping vis as data dimension is >2
+Iter 0201 | Time 1.2534(1.2497) | Loss 5671111.500000(5675938.918790) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0202 | Time 1.2551(1.2501) | Loss 5612325.000000(5671485.944475) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0203 | Time 1.2510(1.2502) | Loss 5683726.000000(5672342.748361) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0204 | Time 1.2853(1.2526) | Loss 5610599.000000(5668020.685976) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0205 | Time 1.2552(1.2528) | Loss 5679091.000000(5668795.607958) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0206 | Time 1.2563(1.2531) | Loss 5676049.500000(5669303.380401) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0207 | Time 1.2882(1.2555) | Loss 5652199.500000(5668106.108773) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0208 | Time 1.2863(1.2577) | Loss 5678705.000000(5668848.031159) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0209 | Time 1.2537(1.2574) | Loss 5666656.000000(5668694.588977) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0210 | Time 1.2526(1.2571) | Loss 5652412.000000(5667554.807749) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0211 | Time 1.2536(1.2568) | Loss 5722339.000000(5671389.701207) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0212 | Time 1.2515(1.2564) | Loss 5633617.500000(5668745.647122) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0213 | Time 1.2509(1.2561) | Loss 5672681.000000(5669021.121824) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0214 | Time 1.2534(1.2559) | Loss 5713421.000000(5672129.113296) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0215 | Time 1.2517(1.2556) | Loss 5636651.500000(5669645.680365) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0216 | Time 1.2527(1.2554) | Loss 5686186.000000(5670803.502740) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0217 | Time 1.2516(1.2551) | Loss 5659927.500000(5670042.182548) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0218 | Time 1.2520(1.2549) | Loss 5651543.000000(5668747.239770) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0219 | Time 1.2538(1.2548) | Loss 5708843.500000(5671553.977986) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0220 | Time 1.2507(1.2545) | Loss 5647148.000000(5669845.559527) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0221 | Time 1.2518(1.2543) | Loss 5663329.000000(5669389.400360) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0222 | Time 1.2519(1.2542) | Loss 5640630.000000(5667376.242335) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0223 | Time 1.2519(1.2540) | Loss 5698555.500000(5669558.790371) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0224 | Time 1.2508(1.2538) | Loss 5694433.500000(5671300.020045) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0225 | Time 1.2503(1.2535) | Loss 5753151.500000(5677029.623642) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0226 | Time 1.2890(1.2560) | Loss 5701568.000000(5678747.309987) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0227 | Time 1.2863(1.2581) | Loss 5671877.000000(5678266.388288) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0228 | Time 1.2539(1.2578) | Loss 5741083.000000(5682663.551108) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0229 | Time 1.2520(1.2574) | Loss 5722950.000000(5685483.602530) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0230 | Time 1.2526(1.2571) | Loss 5678692.000000(5685008.190353) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0231 | Time 1.2898(1.2594) | Loss 5688756.000000(5685270.537028) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0232 | Time 1.2878(1.2614) | Loss 5623359.500000(5680936.764436) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0233 | Time 1.2540(1.2609) | Loss 5654400.000000(5679079.190926) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0234 | Time 1.2885(1.2628) | Loss 5687661.500000(5679679.952561) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0235 | Time 1.3263(1.2672) | Loss 5646317.000000(5677344.545882) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0236 | Time 1.2523(1.2662) | Loss 5692475.500000(5678403.712670) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0237 | Time 1.2524(1.2652) | Loss 5676520.000000(5678271.852783) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0238 | Time 1.2527(1.2644) | Loss 5667349.500000(5677507.288088) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0239 | Time 1.2521(1.2635) | Loss 5664383.500000(5676588.622922) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0240 | Time 1.2888(1.2653) | Loss 5683117.000000(5677045.609318) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0241 | Time 1.2520(1.2643) | Loss 5674896.000000(5676895.136665) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0242 | Time 1.2523(1.2635) | Loss 5645360.000000(5674687.677099) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0243 | Time 1.2547(1.2629) | Loss 5644683.500000(5672587.384702) | NFE Forward 20(20.0) | NFE Backward 63(63.0)
+Iter 0244 | Time 1.3369(1.2681) | Loss 5694914.000000(5674150.247773) | NFE Forward 20(20.0) | NFE Backward 69(63.4)
+Iter 0245 | Time 1.3395(1.2731) | Loss 5670961.000000(5673927.000429) | NFE Forward 20(20.0) | NFE Backward 69(63.8)
+Iter 0246 | Time 1.4239(1.2836) | Loss 5640381.000000(5671578.780399) | NFE Forward 20(20.0) | NFE Backward 75(64.6)
+Iter 0247 | Time 1.3386(1.2875) | Loss 5679163.000000(5672109.675771) | NFE Forward 20(20.0) | NFE Backward 69(64.9)
+Iter 0248 | Time 1.3374(1.2910) | Loss 5637623.500000(5669695.643467) | NFE Forward 20(20.0) | NFE Backward 69(65.2)
+Iter 0249 | Time 1.3388(1.2943) | Loss 5742255.000000(5674774.798424) | NFE Forward 20(20.0) | NFE Backward 69(65.5)
+Iter 0250 | Time 1.3384(1.2974) | Loss 5617391.000000(5670757.932534) | NFE Forward 20(20.0) | NFE Backward 69(65.7)
+Iter 0251 | Time 1.4257(1.3064) | Loss 5715299.500000(5673875.842257) | NFE Forward 20(20.0) | NFE Backward 75(66.4)
+Iter 0252 | Time 1.4248(1.3147) | Loss 5655104.000000(5672561.813299) | NFE Forward 20(20.0) | NFE Backward 75(67.0)
+Iter 0253 | Time 1.4235(1.3223) | Loss 5712428.000000(5675352.446368) | NFE Forward 20(20.0) | NFE Backward 75(67.5)
+Iter 0254 | Time 1.3372(1.3233) | Loss 5652603.000000(5673759.985122) | NFE Forward 20(20.0) | NFE Backward 69(67.6)
+Iter 0255 | Time 1.4590(1.3328) | Loss 5644977.500000(5671745.211164) | NFE Forward 20(20.0) | NFE Backward 75(68.1)
+Iter 0256 | Time 1.4606(1.3418) | Loss 5633622.000000(5669076.586382) | NFE Forward 20(20.0) | NFE Backward 75(68.6)
+Iter 0257 | Time 1.4213(1.3473) | Loss 5619885.000000(5665633.175336) | NFE Forward 20(20.0) | NFE Backward 75(69.1)
+Iter 0258 | Time 1.5442(1.3611) | Loss 5665010.000000(5665589.553062) | NFE Forward 20(20.0) | NFE Backward 81(69.9)
+Iter 0259 | Time 1.4571(1.3678) | Loss 5700299.500000(5668019.249348) | NFE Forward 20(20.0) | NFE Backward 75(70.3)
+Iter 0260 | Time 1.5069(1.3776) | Loss 5709611.000000(5670930.671893) | NFE Forward 20(20.0) | NFE Backward 81(71.0)
+Iter 0261 | Time 1.5051(1.3865) | Loss 5672872.000000(5671066.564861) | NFE Forward 20(20.0) | NFE Backward 81(71.7)
+Iter 0262 | Time 1.5422(1.3974) | Loss 5710344.000000(5673815.985321) | NFE Forward 20(20.0) | NFE Backward 81(72.4)
+Iter 0263 | Time 1.5399(1.4074) | Loss 5720156.000000(5677059.786348) | NFE Forward 20(20.0) | NFE Backward 81(73.0)
+Iter 0264 | Time 1.5041(1.4141) | Loss 5671611.500000(5676678.406304) | NFE Forward 20(20.0) | NFE Backward 81(73.5)
+Iter 0265 | Time 1.5890(1.4264) | Loss 5696311.000000(5678052.687863) | NFE Forward 20(20.0) | NFE Backward 87(74.5)
+Iter 0266 | Time 1.5056(1.4319) | Loss 5670547.000000(5677527.289712) | NFE Forward 20(20.0) | NFE Backward 81(74.9)
+Iter 0267 | Time 1.5029(1.4369) | Loss 5731238.000000(5681287.039432) | NFE Forward 20(20.0) | NFE Backward 81(75.4)
+Iter 0268 | Time 1.5028(1.4415) | Loss 5679163.500000(5681138.391672) | NFE Forward 20(20.0) | NFE Backward 81(75.7)
+Iter 0269 | Time 1.6111(1.4534) | Loss 5595015.500000(5675109.789255) | NFE Forward 20(20.0) | NFE Backward 81(76.1)
+Iter 0270 | Time 1.5038(1.4569) | Loss 5645263.500000(5673020.549007) | NFE Forward 20(20.0) | NFE Backward 81(76.5)
+Iter 0271 | Time 1.5069(1.4604) | Loss 5671249.500000(5672896.575577) | NFE Forward 20(20.0) | NFE Backward 81(76.8)
+Iter 0272 | Time 1.4187(1.4575) | Loss 5711257.000000(5675581.805286) | NFE Forward 20(20.0) | NFE Backward 75(76.7)
+Iter 0273 | Time 1.5066(1.4609) | Loss 5684625.000000(5676214.828916) | NFE Forward 20(20.0) | NFE Backward 81(77.0)
+Iter 0274 | Time 1.5395(1.4664) | Loss 5641857.500000(5673809.815892) | NFE Forward 20(20.0) | NFE Backward 81(77.2)
+Iter 0275 | Time 1.5406(1.4716) | Loss 5700758.000000(5675696.188780) | NFE Forward 20(20.0) | NFE Backward 81(77.5)
+Iter 0276 | Time 1.5043(1.4739) | Loss 5684137.000000(5676287.045565) | NFE Forward 20(20.0) | NFE Backward 81(77.7)
+Iter 0277 | Time 1.5073(1.4762) | Loss 5718745.500000(5679259.137376) | NFE Forward 20(20.0) | NFE Backward 81(78.0)
+Iter 0278 | Time 1.5755(1.4832) | Loss 5632594.000000(5675992.577759) | NFE Forward 26(20.4) | NFE Backward 81(78.2)
+Iter 0279 | Time 1.5777(1.4898) | Loss 5687201.500000(5676777.202316) | NFE Forward 26(20.8) | NFE Backward 81(78.4)
+Iter 0280 | Time 1.5035(1.4908) | Loss 5641722.000000(5674323.338154) | NFE Forward 20(20.8) | NFE Backward 81(78.6)
+Iter 0281 | Time 1.5043(1.4917) | Loss 5607897.500000(5669673.529483) | NFE Forward 20(20.7) | NFE Backward 81(78.7)
+Iter 0282 | Time 1.5391(1.4950) | Loss 5616985.500000(5665985.367419) | NFE Forward 20(20.7) | NFE Backward 81(78.9)
+Iter 0283 | Time 1.5048(1.4957) | Loss 5677971.500000(5666824.396700) | NFE Forward 20(20.6) | NFE Backward 81(79.0)
+Iter 0284 | Time 1.5450(1.4992) | Loss 5683561.000000(5667995.958931) | NFE Forward 20(20.6) | NFE Backward 81(79.2)
+Iter 0285 | Time 1.5483(1.5026) | Loss 5626582.000000(5665096.981806) | NFE Forward 20(20.5) | NFE Backward 81(79.3)
+Iter 0286 | Time 1.5101(1.5031) | Loss 5600753.000000(5660592.903079) | NFE Forward 20(20.5) | NFE Backward 81(79.4)
+Iter 0287 | Time 1.5067(1.5034) | Loss 5682420.000000(5662120.799864) | NFE Forward 20(20.5) | NFE Backward 81(79.5)
+Iter 0288 | Time 1.5099(1.5038) | Loss 5676831.500000(5663150.548873) | NFE Forward 20(20.4) | NFE Backward 81(79.6)
+Iter 0289 | Time 1.5417(1.5065) | Loss 5692762.000000(5665223.350452) | NFE Forward 26(20.8) | NFE Backward 81(79.7)
+Iter 0290 | Time 1.5395(1.5088) | Loss 5670692.000000(5665606.155921) | NFE Forward 20(20.8) | NFE Backward 81(79.8)
+Iter 0291 | Time 1.5405(1.5110) | Loss 5602641.500000(5661198.630006) | NFE Forward 20(20.7) | NFE Backward 81(79.9)
+Iter 0292 | Time 1.5410(1.5131) | Loss 5661504.000000(5661220.005906) | NFE Forward 20(20.7) | NFE Backward 81(80.0)
+Iter 0293 | Time 1.5765(1.5175) | Loss 5629610.000000(5659007.305492) | NFE Forward 26(21.0) | NFE Backward 81(80.1)
+Iter 0294 | Time 1.5104(1.5170) | Loss 5706995.500000(5662366.479108) | NFE Forward 20(21.0) | NFE Backward 81(80.1)
+Iter 0295 | Time 1.5094(1.5165) | Loss 5682879.000000(5663802.355570) | NFE Forward 20(20.9) | NFE Backward 81(80.2)
+Iter 0296 | Time 1.5098(1.5160) | Loss 5699255.000000(5666284.040680) | NFE Forward 20(20.8) | NFE Backward 81(80.2)
+Iter 0297 | Time 1.5101(1.5156) | Loss 5604784.000000(5661979.037833) | NFE Forward 20(20.8) | NFE Backward 81(80.3)
+Iter 0298 | Time 1.5112(1.5153) | Loss 5650568.000000(5661180.265184) | NFE Forward 20(20.7) | NFE Backward 81(80.3)
+Iter 0299 | Time 1.5454(1.5174) | Loss 5657783.500000(5660942.491622) | NFE Forward 26(21.1) | NFE Backward 81(80.4)
+Iter 0300 | Time 1.5111(1.5170) | Loss 5720655.000000(5665122.367208) | NFE Forward 20(21.0) | NFE Backward 81(80.4)
+[TEST] Iter 0300 | Test Loss 5654009.500000 | NFE 20
+Skipping vis as data dimension is >2
+Iter 0301 | Time 1.6152(1.5239) | Loss 5654113.000000(5664351.711503) | NFE Forward 20(20.9) | NFE Backward 81(80.5)
+Iter 0302 | Time 1.5105(1.5229) | Loss 5670641.500000(5664791.996698) | NFE Forward 20(20.9) | NFE Backward 81(80.5)
+Iter 0303 | Time 1.5086(1.5219) | Loss 5724531.500000(5668973.761929) | NFE Forward 20(20.8) | NFE Backward 81(80.5)
+Iter 0304 | Time 1.5083(1.5210) | Loss 5616785.000000(5665320.548594) | NFE Forward 20(20.8) | NFE Backward 81(80.6)
+Iter 0305 | Time 1.5079(1.5200) | Loss 5656940.000000(5664733.910193) | NFE Forward 20(20.7) | NFE Backward 81(80.6)
+Iter 0306 | Time 1.5480(1.5220) | Loss 5661119.500000(5664480.901479) | NFE Forward 20(20.7) | NFE Backward 81(80.6)
+Iter 0307 | Time 1.5445(1.5236) | Loss 5688943.000000(5666193.248376) | NFE Forward 20(20.6) | NFE Backward 81(80.7)
+Iter 0308 | Time 1.5447(1.5251) | Loss 5651941.500000(5665195.625989) | NFE Forward 20(20.6) | NFE Backward 81(80.7)
+Iter 0309 | Time 1.5087(1.5239) | Loss 5685686.000000(5666629.952170) | NFE Forward 20(20.5) | NFE Backward 81(80.7)
+Iter 0310 | Time 1.5450(1.5254) | Loss 5608148.000000(5662536.215518) | NFE Forward 20(20.5) | NFE Backward 81(80.7)
+Iter 0311 | Time 1.5114(1.5244) | Loss 5599934.000000(5658154.060432) | NFE Forward 20(20.5) | NFE Backward 81(80.7)
+Iter 0312 | Time 1.5102(1.5234) | Loss 5692337.000000(5660546.866202) | NFE Forward 20(20.4) | NFE Backward 81(80.8)
+Iter 0313 | Time 1.5073(1.5223) | Loss 5641883.000000(5659240.395568) | NFE Forward 20(20.4) | NFE Backward 81(80.8)
+Iter 0314 | Time 1.5047(1.5210) | Loss 5640465.500000(5657926.152878) | NFE Forward 20(20.4) | NFE Backward 81(80.8)
+Iter 0315 | Time 1.6239(1.5282) | Loss 5652891.000000(5657573.692176) | NFE Forward 20(20.3) | NFE Backward 87(81.2)
+Iter 0316 | Time 1.5080(1.5268) | Loss 5677896.000000(5658996.253724) | NFE Forward 20(20.3) | NFE Backward 81(81.2)
+Iter 0317 | Time 1.6585(1.5360) | Loss 5638592.000000(5657567.955963) | NFE Forward 20(20.3) | NFE Backward 87(81.6)
+Iter 0318 | Time 1.5751(1.5388) | Loss 5620477.500000(5654971.624046) | NFE Forward 20(20.3) | NFE Backward 81(81.6)
+Iter 0319 | Time 1.6498(1.5465) | Loss 5643422.000000(5654163.150363) | NFE Forward 20(20.3) | NFE Backward 81(81.5)
+Iter 0320 | Time 1.6265(1.5521) | Loss 5687186.000000(5656474.749837) | NFE Forward 20(20.2) | NFE Backward 87(81.9)
+Iter 0321 | Time 1.5451(1.5517) | Loss 5647037.500000(5655814.142349) | NFE Forward 26(20.6) | NFE Backward 81(81.9)
+Iter 0322 | Time 1.6623(1.5594) | Loss 5652688.000000(5655595.312384) | NFE Forward 20(20.6) | NFE Backward 87(82.2)
+Iter 0323 | Time 1.5048(1.5556) | Loss 5698319.000000(5658585.970517) | NFE Forward 20(20.6) | NFE Backward 81(82.1)
+Iter 0324 | Time 1.6625(1.5631) | Loss 5645962.000000(5657702.292581) | NFE Forward 20(20.5) | NFE Backward 87(82.5)
+Iter 0325 | Time 1.5468(1.5619) | Loss 5647841.000000(5657012.002101) | NFE Forward 20(20.5) | NFE Backward 81(82.4)
+Iter 0326 | Time 1.5772(1.5630) | Loss 5660483.000000(5657254.971953) | NFE Forward 20(20.4) | NFE Backward 81(82.3)
+Iter 0327 | Time 1.5041(1.5589) | Loss 5631228.000000(5655433.083917) | NFE Forward 20(20.4) | NFE Backward 81(82.2)
+Iter 0328 | Time 1.5765(1.5601) | Loss 5622811.500000(5653149.573043) | NFE Forward 20(20.4) | NFE Backward 81(82.1)
+Iter 0329 | Time 1.6592(1.5670) | Loss 5622479.000000(5651002.632930) | NFE Forward 20(20.4) | NFE Backward 87(82.4)
+Iter 0330 | Time 1.5418(1.5653) | Loss 5627000.000000(5649322.448625) | NFE Forward 20(20.3) | NFE Backward 81(82.3)
+Iter 0331 | Time 1.5764(1.5660) | Loss 5613057.500000(5646783.902221) | NFE Forward 20(20.3) | NFE Backward 81(82.2)
+Iter 0332 | Time 1.6975(1.5753) | Loss 5688749.500000(5649721.494065) | NFE Forward 20(20.3) | NFE Backward 87(82.6)
+Iter 0333 | Time 1.5411(1.5729) | Loss 5596093.500000(5645967.534481) | NFE Forward 20(20.3) | NFE Backward 81(82.5)
+Iter 0334 | Time 1.5414(1.5707) | Loss 5699670.000000(5649726.707067) | NFE Forward 20(20.2) | NFE Backward 81(82.4)
+Iter 0335 | Time 1.6848(1.5787) | Loss 5705548.000000(5653634.197572) | NFE Forward 20(20.2) | NFE Backward 81(82.3)
+Iter 0336 | Time 1.5799(1.5787) | Loss 5634573.000000(5652299.913742) | NFE Forward 20(20.2) | NFE Backward 81(82.2)
+Iter 0337 | Time 1.6616(1.5845) | Loss 5681635.500000(5654353.404780) | NFE Forward 20(20.2) | NFE Backward 87(82.5)
+Iter 0338 | Time 1.5476(1.5820) | Loss 5645355.500000(5653723.551446) | NFE Forward 26(20.6) | NFE Backward 81(82.4)
+Iter 0339 | Time 1.5810(1.5819) | Loss 5644275.500000(5653062.187845) | NFE Forward 20(20.6) | NFE Backward 81(82.3)
+Iter 0340 | Time 1.6154(1.5842) | Loss 5641759.000000(5652270.964695) | NFE Forward 20(20.5) | NFE Backward 81(82.2)
+Iter 0341 | Time 1.6484(1.5887) | Loss 5642094.000000(5651558.577167) | NFE Forward 26(20.9) | NFE Backward 81(82.1)
+Iter 0342 | Time 1.6121(1.5904) | Loss 5635863.000000(5650459.886765) | NFE Forward 26(21.3) | NFE Backward 81(82.1)
+Iter 0343 | Time 1.6124(1.5919) | Loss 5677607.500000(5652360.219692) | NFE Forward 20(21.2) | NFE Backward 81(82.0)
+Iter 0344 | Time 1.6484(1.5959) | Loss 5659799.000000(5652880.934313) | NFE Forward 20(21.1) | NFE Backward 81(81.9)
+Iter 0345 | Time 1.5831(1.5950) | Loss 5682057.500000(5654923.293911) | NFE Forward 20(21.0) | NFE Backward 81(81.9)
+Iter 0346 | Time 1.6995(1.6023) | Loss 5614072.000000(5652063.703337) | NFE Forward 20(20.9) | NFE Backward 87(82.2)
+Iter 0347 | Time 1.6189(1.6035) | Loss 5639398.000000(5651177.104104) | NFE Forward 20(20.9) | NFE Backward 81(82.1)
+Iter 0348 | Time 1.7009(1.6103) | Loss 5591688.000000(5647012.866817) | NFE Forward 20(20.8) | NFE Backward 87(82.5)
+Iter 0349 | Time 1.6893(1.6158) | Loss 5666207.500000(5648356.491139) | NFE Forward 20(20.8) | NFE Backward 81(82.4)
+Iter 0350 | Time 1.6530(1.6184) | Loss 5645960.000000(5648188.736760) | NFE Forward 26(21.1) | NFE Backward 81(82.3)
+Iter 0351 | Time 1.6531(1.6208) | Loss 5715617.500000(5652908.750186) | NFE Forward 20(21.0) | NFE Backward 81(82.2)
+Iter 0352 | Time 1.6851(1.6253) | Loss 5646031.000000(5652427.307673) | NFE Forward 20(21.0) | NFE Backward 81(82.1)
+Iter 0353 | Time 1.6506(1.6271) | Loss 5621355.500000(5650252.281136) | NFE Forward 20(20.9) | NFE Backward 81(82.0)
+Iter 0354 | Time 1.6141(1.6262) | Loss 5688625.000000(5652938.371457) | NFE Forward 20(20.8) | NFE Backward 81(81.9)
+Iter 0355 | Time 1.6182(1.6256) | Loss 5594719.000000(5648863.015455) | NFE Forward 20(20.8) | NFE Backward 81(81.9)
+Iter 0356 | Time 1.7015(1.6309) | Loss 5649718.000000(5648922.864373) | NFE Forward 20(20.7) | NFE Backward 87(82.2)
+Iter 0357 | Time 1.6211(1.6303) | Loss 5618663.500000(5646804.708867) | NFE Forward 20(20.7) | NFE Backward 81(82.2)
+Iter 0358 | Time 1.7288(1.6372) | Loss 5657319.500000(5647540.744246) | NFE Forward 26(21.1) | NFE Backward 81(82.1)
+Iter 0359 | Time 1.6545(1.6384) | Loss 5703707.500000(5651472.417149) | NFE Forward 20(21.0) | NFE Backward 81(82.0)
+Iter 0360 | Time 1.6539(1.6395) | Loss 5628039.500000(5649832.112948) | NFE Forward 20(20.9) | NFE Backward 81(81.9)
+Iter 0361 | Time 1.6532(1.6404) | Loss 5686027.000000(5652365.755042) | NFE Forward 20(20.8) | NFE Backward 81(81.9)
+Iter 0362 | Time 1.6577(1.6416) | Loss 5643690.000000(5651758.452189) | NFE Forward 20(20.8) | NFE Backward 81(81.8)
+Iter 0363 | Time 1.6569(1.6427) | Loss 5659175.000000(5652277.610536) | NFE Forward 20(20.7) | NFE Backward 81(81.7)
+Iter 0364 | Time 1.7246(1.6484) | Loss 5653282.000000(5652347.917798) | NFE Forward 20(20.7) | NFE Backward 81(81.7)
+Iter 0365 | Time 1.6933(1.6516) | Loss 5614978.000000(5649732.023553) | NFE Forward 26(21.1) | NFE Backward 81(81.6)
+Iter 0366 | Time 1.7752(1.6602) | Loss 5624259.500000(5647948.946904) | NFE Forward 20(21.0) | NFE Backward 87(82.0)
+Iter 0367 | Time 1.7612(1.6673) | Loss 5664495.000000(5649107.170621) | NFE Forward 20(20.9) | NFE Backward 81(81.9)
+Iter 0368 | Time 1.8456(1.6798) | Loss 5694103.000000(5652256.878677) | NFE Forward 26(21.3) | NFE Backward 87(82.3)
+Iter 0369 | Time 1.6586(1.6783) | Loss 5598070.000000(5648463.797170) | NFE Forward 26(21.6) | NFE Backward 81(82.2)
+Iter 0370 | Time 1.6921(1.6793) | Loss 5647057.000000(5648365.321368) | NFE Forward 20(21.5) | NFE Backward 81(82.1)
+Iter 0371 | Time 1.7285(1.6827) | Loss 5637883.000000(5647631.558872) | NFE Forward 32(22.2) | NFE Backward 81(82.0)
+Iter 0372 | Time 1.8579(1.6950) | Loss 5670637.000000(5649241.939751) | NFE Forward 20(22.1) | NFE Backward 93(82.8)
+Iter 0373 | Time 1.6896(1.6946) | Loss 5658780.000000(5649909.603968) | NFE Forward 20(21.9) | NFE Backward 81(82.7)
+Iter 0374 | Time 1.7398(1.6978) | Loss 5698609.500000(5653318.596691) | NFE Forward 20(21.8) | NFE Backward 87(83.0)
+Iter 0375 | Time 1.9675(1.7166) | Loss 5646690.000000(5652854.594922) | NFE Forward 38(22.9) | NFE Backward 93(83.7)
+Iter 0376 | Time 1.7300(1.7176) | Loss 5593319.000000(5648687.103278) | NFE Forward 32(23.6) | NFE Backward 81(83.5)
+Iter 0377 | Time 1.7774(1.7218) | Loss 5674980.000000(5650527.606048) | NFE Forward 26(23.7) | NFE Backward 87(83.7)
+Iter 0378 | Time 1.8119(1.7281) | Loss 5621057.500000(5648464.698625) | NFE Forward 26(23.9) | NFE Backward 87(84.0)
+Iter 0379 | Time 1.8496(1.7366) | Loss 5633815.000000(5647439.219721) | NFE Forward 26(24.0) | NFE Backward 87(84.2)
+Iter 0380 | Time 1.8256(1.7428) | Loss 5679712.000000(5649698.314341) | NFE Forward 26(24.2) | NFE Backward 93(84.8)
+Iter 0381 | Time 1.8143(1.7478) | Loss 5606983.000000(5646708.242337) | NFE Forward 26(24.3) | NFE Backward 87(85.0)
+Iter 0382 | Time 1.6561(1.7414) | Loss 5620211.000000(5644853.435373) | NFE Forward 20(24.0) | NFE Backward 81(84.7)
+Iter 0383 | Time 1.7874(1.7446) | Loss 5628243.000000(5643690.704897) | NFE Forward 20(23.7) | NFE Backward 93(85.3)
+Iter 0384 | Time 1.8098(1.7492) | Loss 5622999.000000(5642242.285554) | NFE Forward 32(24.3) | NFE Backward 87(85.4)
+Iter 0385 | Time 1.8917(1.7592) | Loss 5628295.000000(5641265.975566) | NFE Forward 32(24.8) | NFE Backward 93(85.9)
+Iter 0386 | Time 1.7358(1.7575) | Loss 5634741.500000(5640809.262276) | NFE Forward 20(24.5) | NFE Backward 87(86.0)
+Iter 0387 | Time 1.7724(1.7586) | Loss 5638795.500000(5640668.298917) | NFE Forward 32(25.0) | NFE Backward 87(86.1)
+Iter 0388 | Time 1.8446(1.7646) | Loss 5608006.000000(5638381.937992) | NFE Forward 32(25.5) | NFE Backward 87(86.1)
+Iter 0389 | Time 1.8465(1.7703) | Loss 5644683.500000(5638823.047333) | NFE Forward 32(26.0) | NFE Backward 87(86.2)
+Iter 0390 | Time 1.8095(1.7731) | Loss 5590540.000000(5635443.234020) | NFE Forward 32(26.4) | NFE Backward 87(86.2)
+Iter 0391 | Time 1.8286(1.7769) | Loss 5584448.500000(5631873.602638) | NFE Forward 26(26.4) | NFE Backward 93(86.7)
+Iter 0392 | Time 1.8633(1.7830) | Loss 5660419.500000(5633871.815454) | NFE Forward 32(26.8) | NFE Backward 93(87.2)
+Iter 0393 | Time 1.8251(1.7859) | Loss 5616914.000000(5632684.768372) | NFE Forward 26(26.7) | NFE Backward 93(87.6)
+Iter 0394 | Time 1.7747(1.7852) | Loss 5703933.500000(5637672.179586) | NFE Forward 26(26.7) | NFE Backward 87(87.5)
+Iter 0395 | Time 1.8800(1.7918) | Loss 5616710.000000(5636204.827015) | NFE Forward 32(27.0) | NFE Backward 87(87.5)
+Iter 0396 | Time 2.0106(1.8071) | Loss 5633757.000000(5636033.479124) | NFE Forward 32(27.4) | NFE Backward 99(88.3)
+Iter 0397 | Time 2.0604(1.8248) | Loss 5587875.500000(5632662.420585) | NFE Forward 32(27.7) | NFE Backward 105(89.5)
+Iter 0398 | Time 1.9642(1.8346) | Loss 5594711.000000(5630005.821144) | NFE Forward 32(28.0) | NFE Backward 93(89.7)
+Iter 0399 | Time 2.0123(1.8470) | Loss 5611391.000000(5628702.783664) | NFE Forward 32(28.3) | NFE Backward 99(90.4)
+Iter 0400 | Time 1.8946(1.8504) | Loss 5667189.500000(5631396.853808) | NFE Forward 32(28.5) | NFE Backward 93(90.5)
+[TEST] Iter 0400 | Test Loss 5597947.000000 | NFE 32
+Skipping vis as data dimension is >2
+Iter 0401 | Time 1.8649(1.8514) | Loss 5599417.500000(5629158.299041) | NFE Forward 32(28.8) | NFE Backward 93(90.7)
+Iter 0402 | Time 1.8671(1.8525) | Loss 5618300.000000(5628398.218108) | NFE Forward 32(29.0) | NFE Backward 93(90.9)
+Iter 0403 | Time 1.8661(1.8534) | Loss 5680472.000000(5632043.382841) | NFE Forward 32(29.2) | NFE Backward 93(91.0)
+Iter 0404 | Time 2.0072(1.8642) | Loss 5638688.000000(5632508.506042) | NFE Forward 44(30.3) | NFE Backward 93(91.2)
+Iter 0405 | Time 1.9702(1.8716) | Loss 5631585.500000(5632443.895619) | NFE Forward 38(30.8) | NFE Backward 93(91.3)
+Iter 0406 | Time 1.9305(1.8757) | Loss 5656464.000000(5634125.302926) | NFE Forward 38(31.3) | NFE Backward 93(91.4)
+Iter 0407 | Time 1.8245(1.8721) | Loss 5635491.500000(5634220.936721) | NFE Forward 20(30.5) | NFE Backward 93(91.5)
+Iter 0408 | Time 1.8968(1.8739) | Loss 5601668.000000(5631942.231150) | NFE Forward 32(30.6) | NFE Backward 93(91.6)
+Iter 0409 | Time 1.9655(1.8803) | Loss 5645043.000000(5632859.284970) | NFE Forward 32(30.7) | NFE Backward 93(91.7)
+Iter 0410 | Time 1.9353(1.8841) | Loss 5641792.000000(5633484.575022) | NFE Forward 32(30.8) | NFE Backward 93(91.8)
+Iter 0411 | Time 1.9346(1.8877) | Loss 5589376.000000(5630396.974770) | NFE Forward 32(30.9) | NFE Backward 93(91.9)
+Iter 0412 | Time 1.8978(1.8884) | Loss 5656013.000000(5632190.096536) | NFE Forward 38(31.4) | NFE Backward 93(92.0)
+Iter 0413 | Time 1.8277(1.8841) | Loss 5678910.000000(5635460.489779) | NFE Forward 32(31.4) | NFE Backward 93(92.0)
+Iter 0414 | Time 1.8626(1.8826) | Loss 5630375.000000(5635104.505494) | NFE Forward 32(31.5) | NFE Backward 93(92.1)
+Iter 0415 | Time 1.9008(1.8839) | Loss 5628547.500000(5634645.515110) | NFE Forward 32(31.5) | NFE Backward 93(92.2)
+Iter 0416 | Time 1.9125(1.8859) | Loss 5697917.500000(5639074.554052) | NFE Forward 26(31.1) | NFE Backward 99(92.7)
+Iter 0417 | Time 1.8984(1.8868) | Loss 5613884.000000(5637311.215268) | NFE Forward 26(30.8) | NFE Backward 93(92.7)
+Iter 0418 | Time 2.0533(1.8984) | Loss 5617637.500000(5635934.055200) | NFE Forward 26(30.4) | NFE Backward 99(93.1)
+Iter 0419 | Time 2.0187(1.9068) | Loss 5641342.000000(5636312.611336) | NFE Forward 26(30.1) | NFE Backward 99(93.5)
+Iter 0420 | Time 1.8974(1.9062) | Loss 5610932.000000(5634535.968542) | NFE Forward 32(30.2) | NFE Backward 93(93.5)
+Iter 0421 | Time 1.8657(1.9033) | Loss 5654571.000000(5635938.420744) | NFE Forward 26(30.0) | NFE Backward 93(93.5)
+Iter 0422 | Time 1.7916(1.8955) | Loss 5693704.000000(5639982.011292) | NFE Forward 26(29.7) | NFE Backward 93(93.4)
+Iter 0423 | Time 1.9005(1.8959) | Loss 5674343.500000(5642387.315502) | NFE Forward 32(29.8) | NFE Backward 93(93.4)
+Iter 0424 | Time 1.9479(1.8995) | Loss 5672563.500000(5644499.648417) | NFE Forward 32(30.0) | NFE Backward 99(93.8)
+Iter 0425 | Time 1.8291(1.8946) | Loss 5622561.500000(5642963.978027) | NFE Forward 26(29.7) | NFE Backward 93(93.7)
+Iter 0426 | Time 2.0955(1.9087) | Loss 5627125.500000(5641855.284565) | NFE Forward 32(29.9) | NFE Backward 99(94.1)
+Iter 0427 | Time 1.9728(1.9131) | Loss 5632175.500000(5641177.699646) | NFE Forward 32(30.0) | NFE Backward 93(94.0)
+Iter 0428 | Time 1.9700(1.9171) | Loss 5633551.000000(5640643.830671) | NFE Forward 32(30.2) | NFE Backward 93(94.0)
+Iter 0429 | Time 2.0532(1.9266) | Loss 5661605.500000(5642111.147524) | NFE Forward 32(30.3) | NFE Backward 99(94.3)
+Iter 0430 | Time 1.8643(1.9223) | Loss 5573775.000000(5637327.617197) | NFE Forward 32(30.4) | NFE Backward 93(94.2)
+Iter 0431 | Time 2.3043(1.9490) | Loss 5612198.000000(5635568.543993) | NFE Forward 32(30.5) | NFE Backward 117(95.8)
+Iter 0432 | Time 2.2260(1.9684) | Loss 5605700.000000(5633477.745914) | NFE Forward 38(31.0) | NFE Backward 111(96.9)
+Iter 0433 | Time 2.0712(1.9756) | Loss 5652859.500000(5634834.468700) | NFE Forward 32(31.1) | NFE Backward 105(97.4)
+Iter 0434 | Time 1.9400(1.9731) | Loss 5660519.000000(5636632.385891) | NFE Forward 32(31.2) | NFE Backward 93(97.1)
+Iter 0435 | Time 2.0229(1.9766) | Loss 5605314.000000(5634440.098878) | NFE Forward 32(31.2) | NFE Backward 99(97.3)
+Iter 0436 | Time 2.0600(1.9824) | Loss 5658350.000000(5636113.791957) | NFE Forward 32(31.3) | NFE Backward 99(97.4)
+Iter 0437 | Time 2.0256(1.9855) | Loss 5603691.000000(5633844.196520) | NFE Forward 32(31.3) | NFE Backward 99(97.5)
+Iter 0438 | Time 2.1039(1.9938) | Loss 5628771.500000(5633489.107764) | NFE Forward 32(31.4) | NFE Backward 105(98.0)
+Iter 0439 | Time 2.0156(1.9953) | Loss 5614937.500000(5632190.495220) | NFE Forward 32(31.4) | NFE Backward 99(98.1)
+Iter 0440 | Time 1.7913(1.9810) | Loss 5583060.000000(5628751.360555) | NFE Forward 26(31.0) | NFE Backward 93(97.7)
+Iter 0441 | Time 1.8270(1.9702) | Loss 5579289.000000(5625288.995316) | NFE Forward 26(30.7) | NFE Backward 93(97.4)
+Iter 0442 | Time 1.9004(1.9653) | Loss 5646023.500000(5626740.410644) | NFE Forward 32(30.8) | NFE Backward 93(97.1)
+Iter 0443 | Time 2.0315(1.9700) | Loss 5629893.500000(5626961.126899) | NFE Forward 32(30.9) | NFE Backward 105(97.6)
+Iter 0444 | Time 1.9876(1.9712) | Loss 5654693.500000(5628902.393016) | NFE Forward 32(30.9) | NFE Backward 99(97.7)
+Iter 0445 | Time 1.9462(1.9695) | Loss 5588282.000000(5626058.965505) | NFE Forward 26(30.6) | NFE Backward 99(97.8)
+Iter 0446 | Time 2.0322(1.9738) | Loss 5602339.000000(5624398.567919) | NFE Forward 26(30.3) | NFE Backward 105(98.3)
+Iter 0447 | Time 2.0290(1.9777) | Loss 5662394.000000(5627058.248165) | NFE Forward 32(30.4) | NFE Backward 105(98.8)
+Iter 0448 | Time 2.1437(1.9893) | Loss 5533053.000000(5620477.880793) | NFE Forward 32(30.5) | NFE Backward 105(99.2)
+Iter 0449 | Time 2.2244(2.0058) | Loss 5669599.000000(5623916.359138) | NFE Forward 32(30.6) | NFE Backward 111(100.1)
+Iter 0450 | Time 1.9972(2.0052) | Loss 5660905.500000(5626505.598998) | NFE Forward 26(30.3) | NFE Backward 105(100.4)
+Iter 0451 | Time 2.1146(2.0128) | Loss 5597087.500000(5624446.332068) | NFE Forward 26(30.0) | NFE Backward 111(101.1)
+Iter 0452 | Time 2.0783(2.0174) | Loss 5694992.000000(5629384.528824) | NFE Forward 32(30.1) | NFE Backward 111(101.8)
+Iter 0453 | Time 2.0269(2.0181) | Loss 5597282.000000(5627137.351806) | NFE Forward 26(29.8) | NFE Backward 105(102.1)
+Iter 0454 | Time 1.8240(2.0045) | Loss 5550057.000000(5621741.727180) | NFE Forward 32(30.0) | NFE Backward 93(101.4)
+Iter 0455 | Time 1.9094(1.9978) | Loss 5616301.000000(5621360.876277) | NFE Forward 32(30.1) | NFE Backward 99(101.3)
+Iter 0456 | Time 2.0858(2.0040) | Loss 5612936.000000(5620771.134938) | NFE Forward 32(30.3) | NFE Backward 99(101.1)
+Iter 0457 | Time 1.9095(1.9974) | Loss 5620410.000000(5620745.855492) | NFE Forward 32(30.4) | NFE Backward 99(100.9)
+Iter 0458 | Time 2.2192(2.0129) | Loss 5610732.000000(5620044.885608) | NFE Forward 32(30.5) | NFE Backward 111(101.7)
+Iter 0459 | Time 2.1424(2.0220) | Loss 5608358.000000(5619226.803615) | NFE Forward 32(30.6) | NFE Backward 111(102.3)
+Iter 0460 | Time 1.9444(2.0165) | Loss 5593313.500000(5617412.872362) | NFE Forward 32(30.7) | NFE Backward 99(102.1)
+Iter 0461 | Time 1.9289(2.0104) | Loss 5602905.500000(5616397.356297) | NFE Forward 32(30.8) | NFE Backward 93(101.4)
+Iter 0462 | Time 2.0622(2.0140) | Loss 5597494.000000(5615074.121356) | NFE Forward 32(30.9) | NFE Backward 105(101.7)
+Iter 0463 | Time 1.9843(2.0119) | Loss 5638725.000000(5616729.682861) | NFE Forward 32(31.0) | NFE Backward 99(101.5)
+Iter 0464 | Time 2.1022(2.0183) | Loss 5607679.000000(5616096.135061) | NFE Forward 32(31.0) | NFE Backward 105(101.7)
+Iter 0465 | Time 1.9550(2.0138) | Loss 5655495.000000(5618854.055606) | NFE Forward 26(30.7) | NFE Backward 105(102.0)
+Iter 0466 | Time 2.2282(2.0288) | Loss 5672840.000000(5622633.071714) | NFE Forward 26(30.3) | NFE Backward 117(103.0)
+Iter 0467 | Time 1.9778(2.0253) | Loss 5651089.500000(5624625.021694) | NFE Forward 32(30.5) | NFE Backward 99(102.7)
+Iter 0468 | Time 1.9920(2.0229) | Loss 5605313.500000(5623273.215175) | NFE Forward 26(30.2) | NFE Backward 105(102.9)
+Iter 0469 | Time 2.0252(2.0231) | Loss 5599331.500000(5621597.295113) | NFE Forward 26(29.9) | NFE Backward 105(103.0)
+Iter 0470 | Time 1.9083(2.0151) | Loss 5639763.000000(5622868.894455) | NFE Forward 32(30.0) | NFE Backward 99(102.8)
+Iter 0471 | Time 1.9901(2.0133) | Loss 5582293.500000(5620028.616843) | NFE Forward 26(29.7) | NFE Backward 105(102.9)
+Iter 0472 | Time 1.8590(2.0025) | Loss 5602024.000000(5618768.293664) | NFE Forward 26(29.5) | NFE Backward 93(102.2)
+Iter 0473 | Time 2.0940(2.0089) | Loss 5669551.500000(5622323.118108) | NFE Forward 32(29.6) | NFE Backward 105(102.4)
+Iter 0474 | Time 1.9745(2.0065) | Loss 5692354.000000(5627225.279840) | NFE Forward 32(29.8) | NFE Backward 99(102.2)
+Iter 0475 | Time 2.2983(2.0269) | Loss 5548492.000000(5621713.950251) | NFE Forward 32(30.0) | NFE Backward 117(103.2)
+Iter 0476 | Time 2.1341(2.0344) | Loss 5613063.000000(5621108.383734) | NFE Forward 32(30.1) | NFE Backward 105(103.3)
+Iter 0477 | Time 2.1806(2.0447) | Loss 5652234.000000(5623287.176872) | NFE Forward 32(30.2) | NFE Backward 111(103.9)
+Iter 0478 | Time 1.9825(2.0403) | Loss 5656648.000000(5625622.434491) | NFE Forward 26(29.9) | NFE Backward 99(103.5)
+Iter 0479 | Time 2.1565(2.0484) | Loss 5626279.000000(5625668.394077) | NFE Forward 32(30.1) | NFE Backward 99(103.2)
+Iter 0480 | Time 2.0539(2.0488) | Loss 5598498.000000(5623766.466492) | NFE Forward 26(29.8) | NFE Backward 99(102.9)
+Iter 0481 | Time 2.1941(2.0590) | Loss 5635347.500000(5624577.138837) | NFE Forward 26(29.5) | NFE Backward 117(103.9)
+Iter 0482 | Time 2.2529(2.0726) | Loss 5616913.500000(5624040.684119) | NFE Forward 32(29.7) | NFE Backward 111(104.4)
+Iter 0483 | Time 1.9691(2.0653) | Loss 5657025.500000(5626349.621230) | NFE Forward 38(30.3) | NFE Backward 93(103.6)
+Iter 0484 | Time 2.0126(2.0616) | Loss 5605351.000000(5624879.717744) | NFE Forward 32(30.4) | NFE Backward 99(103.3)
+Iter 0485 | Time 1.9465(2.0536) | Loss 5677481.000000(5628561.807502) | NFE Forward 26(30.1) | NFE Backward 99(103.0)
+Iter 0486 | Time 2.1444(2.0599) | Loss 5609162.000000(5627203.820977) | NFE Forward 32(30.2) | NFE Backward 111(103.5)
+Iter 0487 | Time 1.8901(2.0480) | Loss 5660065.000000(5629504.103509) | NFE Forward 32(30.4) | NFE Backward 93(102.8)
+Iter 0488 | Time 1.8247(2.0324) | Loss 5622337.000000(5629002.406263) | NFE Forward 26(30.1) | NFE Backward 93(102.1)
+Iter 0489 | Time 2.0735(2.0353) | Loss 5640488.000000(5629806.397825) | NFE Forward 32(30.2) | NFE Backward 111(102.7)
+Iter 0490 | Time 1.8744(2.0240) | Loss 5592671.500000(5627206.954977) | NFE Forward 26(29.9) | NFE Backward 99(102.5)
+Iter 0491 | Time 2.2615(2.0406) | Loss 5580841.500000(5623961.373128) | NFE Forward 26(29.6) | NFE Backward 117(103.5)
+Iter 0492 | Time 1.9098(2.0315) | Loss 5631231.000000(5624470.247009) | NFE Forward 26(29.4) | NFE Backward 99(103.2)
+Iter 0493 | Time 1.9084(2.0229) | Loss 5658229.500000(5626833.394719) | NFE Forward 26(29.1) | NFE Backward 99(102.9)
+Iter 0494 | Time 2.0655(2.0259) | Loss 5634413.500000(5627364.002088) | NFE Forward 32(29.3) | NFE Backward 105(103.0)
+Iter 0495 | Time 1.9445(2.0202) | Loss 5618845.500000(5626767.706942) | NFE Forward 32(29.5) | NFE Backward 99(102.8)
+Iter 0496 | Time 2.1088(2.0264) | Loss 5678293.500000(5630374.512456) | NFE Forward 26(29.3) | NFE Backward 111(103.3)
+Iter 0497 | Time 1.9293(2.0196) | Loss 5576732.000000(5626619.536584) | NFE Forward 26(29.0) | NFE Backward 93(102.6)
+Iter 0498 | Time 1.9813(2.0169) | Loss 5644557.000000(5627875.159023) | NFE Forward 26(28.8) | NFE Backward 99(102.4)
+Iter 0499 | Time 1.9804(2.0143) | Loss 5601516.000000(5626030.017892) | NFE Forward 26(28.6) | NFE Backward 99(102.1)
+Iter 0500 | Time 2.1358(2.0228) | Loss 5628623.000000(5626211.526639) | NFE Forward 26(28.4) | NFE Backward 105(102.3)
+[TEST] Iter 0500 | Test Loss 5654001.500000 | NFE 32
+Skipping vis as data dimension is >2
+Iter 0501 | Time 2.0259(2.0231) | Loss 5640369.000000(5627202.549775) | NFE Forward 26(28.3) | NFE Backward 105(102.5)
+Iter 0502 | Time 2.0630(2.0259) | Loss 5596840.000000(5625077.171290) | NFE Forward 26(28.1) | NFE Backward 105(102.7)
+Iter 0503 | Time 1.9903(2.0234) | Loss 5637357.500000(5625936.794300) | NFE Forward 26(28.0) | NFE Backward 105(102.8)
+Iter 0504 | Time 1.8988(2.0146) | Loss 5605583.000000(5624512.028699) | NFE Forward 26(27.8) | NFE Backward 93(102.2)
+Iter 0505 | Time 2.0647(2.0181) | Loss 5602279.000000(5622955.716690) | NFE Forward 26(27.7) | NFE Backward 105(102.4)
+Iter 0506 | Time 1.9758(2.0152) | Loss 5562896.000000(5618751.536522) | NFE Forward 26(27.6) | NFE Backward 99(102.1)
+Iter 0507 | Time 1.9917(2.0135) | Loss 5620685.000000(5618886.878965) | NFE Forward 26(27.5) | NFE Backward 105(102.3)
+Iter 0508 | Time 1.9485(2.0090) | Loss 5654267.500000(5621363.522438) | NFE Forward 26(27.4) | NFE Backward 99(102.1)
+Iter 0509 | Time 1.9823(2.0071) | Loss 5579765.000000(5618451.625867) | NFE Forward 32(27.7) | NFE Backward 99(101.9)
+Iter 0510 | Time 2.0178(2.0079) | Loss 5626055.500000(5618983.897056) | NFE Forward 26(27.6) | NFE Backward 99(101.7)
+Iter 0511 | Time 2.2040(2.0216) | Loss 5611860.000000(5618485.224262) | NFE Forward 32(27.9) | NFE Backward 105(101.9)
+Iter 0512 | Time 2.0619(2.0244) | Loss 5589135.500000(5616430.743564) | NFE Forward 32(28.2) | NFE Backward 105(102.1)
+Iter 0513 | Time 2.1697(2.0346) | Loss 5590014.000000(5614581.571515) | NFE Forward 32(28.4) | NFE Backward 105(102.3)
+Iter 0514 | Time 2.0554(2.0360) | Loss 5604912.000000(5613904.701509) | NFE Forward 32(28.7) | NFE Backward 99(102.1)
+Iter 0515 | Time 2.1084(2.0411) | Loss 5629813.500000(5615018.317403) | NFE Forward 26(28.5) | NFE Backward 111(102.7)
+Iter 0516 | Time 1.9809(2.0369) | Loss 5610371.000000(5614693.005185) | NFE Forward 32(28.7) | NFE Backward 99(102.5)
+Iter 0517 | Time 2.2615(2.0526) | Loss 5612600.000000(5614546.494822) | NFE Forward 32(29.0) | NFE Backward 117(103.5)
+Iter 0518 | Time 2.0636(2.0534) | Loss 5619213.500000(5614873.185184) | NFE Forward 26(28.8) | NFE Backward 105(103.6)
+Iter 0519 | Time 2.0625(2.0540) | Loss 5662869.000000(5618232.892221) | NFE Forward 32(29.0) | NFE Backward 105(103.7)
+Iter 0520 | Time 2.0637(2.0547) | Loss 5605491.500000(5617340.994766) | NFE Forward 32(29.2) | NFE Backward 105(103.8)
+Iter 0521 | Time 1.9453(2.0470) | Loss 5649942.000000(5619623.065132) | NFE Forward 32(29.4) | NFE Backward 99(103.4)
+Iter 0522 | Time 2.1424(2.0537) | Loss 5579975.000000(5616847.700573) | NFE Forward 32(29.6) | NFE Backward 111(104.0)
+Iter 0523 | Time 2.0277(2.0519) | Loss 5626375.500000(5617514.646533) | NFE Forward 32(29.8) | NFE Backward 105(104.0)
+Iter 0524 | Time 2.0628(2.0527) | Loss 5551673.000000(5612905.731276) | NFE Forward 38(30.3) | NFE Backward 105(104.1)
+Iter 0525 | Time 2.2625(2.0673) | Loss 5662981.500000(5616411.035086) | NFE Forward 32(30.4) | NFE Backward 117(105.0)
+Iter 0526 | Time 2.2652(2.0812) | Loss 5602123.000000(5615410.872630) | NFE Forward 32(30.6) | NFE Backward 117(105.8)
+Iter 0527 | Time 2.1808(2.0882) | Loss 5566141.500000(5611962.016546) | NFE Forward 32(30.7) | NFE Backward 111(106.2)
+Iter 0528 | Time 1.9438(2.0781) | Loss 5611793.000000(5611950.185388) | NFE Forward 26(30.3) | NFE Backward 99(105.7)
+Iter 0529 | Time 1.9101(2.0663) | Loss 5657543.500000(5615141.717411) | NFE Forward 26(30.0) | NFE Backward 99(105.2)
+Iter 0530 | Time 2.0636(2.0661) | Loss 5616419.500000(5615231.162192) | NFE Forward 32(30.2) | NFE Backward 105(105.2)
+Iter 0531 | Time 2.1335(2.0708) | Loss 5635299.000000(5616635.910839) | NFE Forward 26(29.9) | NFE Backward 105(105.2)
+Iter 0532 | Time 2.1453(2.0761) | Loss 5606778.000000(5615945.857080) | NFE Forward 32(30.0) | NFE Backward 111(105.6)
+Iter 0533 | Time 2.1451(2.0809) | Loss 5600838.000000(5614888.307084) | NFE Forward 26(29.7) | NFE Backward 111(106.0)
+Iter 0534 | Time 2.0538(2.0790) | Loss 5606897.000000(5614328.915588) | NFE Forward 32(29.9) | NFE Backward 99(105.5)
+Iter 0535 | Time 2.0973(2.0803) | Loss 5609603.500000(5613998.136497) | NFE Forward 32(30.0) | NFE Backward 105(105.5)
+Iter 0536 | Time 2.0638(2.0791) | Loss 5653624.000000(5616771.946942) | NFE Forward 32(30.2) | NFE Backward 105(105.4)
+Iter 0537 | Time 2.0996(2.0805) | Loss 5621134.000000(5617077.290656) | NFE Forward 32(30.3) | NFE Backward 105(105.4)
+Iter 0538 | Time 2.0154(2.0760) | Loss 5612200.000000(5616735.880310) | NFE Forward 32(30.4) | NFE Backward 99(105.0)
+Iter 0539 | Time 1.9834(2.0695) | Loss 5601288.000000(5615654.528689) | NFE Forward 32(30.5) | NFE Backward 99(104.5)
+Iter 0540 | Time 2.0169(2.0658) | Loss 5556725.000000(5611529.461681) | NFE Forward 32(30.6) | NFE Backward 99(104.1)
+Iter 0541 | Time 2.0876(2.0673) | Loss 5609887.500000(5611414.524363) | NFE Forward 32(30.7) | NFE Backward 99(103.8)
+Iter 0542 | Time 2.0150(2.0637) | Loss 5603247.000000(5610842.797657) | NFE Forward 32(30.8) | NFE Backward 99(103.5)
+Iter 0543 | Time 1.9428(2.0552) | Loss 5635299.500000(5612554.766821) | NFE Forward 32(30.9) | NFE Backward 99(103.1)
+Iter 0544 | Time 2.0503(2.0549) | Loss 5635187.500000(5614139.058144) | NFE Forward 32(31.0) | NFE Backward 99(102.9)
+Iter 0545 | Time 2.0158(2.0521) | Loss 5618049.500000(5614412.789074) | NFE Forward 32(31.1) | NFE Backward 99(102.6)
+Iter 0546 | Time 1.9096(2.0422) | Loss 5631274.000000(5615593.073839) | NFE Forward 32(31.1) | NFE Backward 99(102.3)
+Iter 0547 | Time 1.9105(2.0329) | Loss 5645433.500000(5617681.903670) | NFE Forward 32(31.2) | NFE Backward 99(102.1)
+Iter 0548 | Time 2.0512(2.0342) | Loss 5623753.000000(5618106.880413) | NFE Forward 32(31.2) | NFE Backward 99(101.9)
+Iter 0549 | Time 1.9459(2.0280) | Loss 5608977.000000(5617467.788784) | NFE Forward 32(31.3) | NFE Backward 99(101.7)
+Iter 0550 | Time 2.1581(2.0371) | Loss 5623253.500000(5617872.788569) | NFE Forward 32(31.3) | NFE Backward 99(101.5)
+Iter 0551 | Time 2.0542(2.0383) | Loss 5571995.500000(5614661.378369) | NFE Forward 26(31.0) | NFE Backward 99(101.3)
+Iter 0552 | Time 2.1454(2.0458) | Loss 5622611.000000(5615217.851884) | NFE Forward 26(30.6) | NFE Backward 111(102.0)
+Iter 0553 | Time 2.0269(2.0445) | Loss 5565617.000000(5611745.792252) | NFE Forward 26(30.3) | NFE Backward 105(102.2)
+Iter 0554 | Time 2.0605(2.0456) | Loss 5583463.500000(5609766.031794) | NFE Forward 26(30.0) | NFE Backward 105(102.4)
+Iter 0555 | Time 2.1716(2.0544) | Loss 5597455.000000(5608904.259569) | NFE Forward 32(30.1) | NFE Backward 105(102.6)
+Iter 0556 | Time 2.0549(2.0545) | Loss 5626666.000000(5610147.581399) | NFE Forward 32(30.3) | NFE Backward 99(102.3)
+Iter 0557 | Time 2.0177(2.0519) | Loss 5589767.000000(5608720.940701) | NFE Forward 26(30.0) | NFE Backward 99(102.1)
+Iter 0558 | Time 2.0170(2.0495) | Loss 5638168.000000(5610782.234852) | NFE Forward 32(30.1) | NFE Backward 99(101.9)
+Iter 0559 | Time 1.9831(2.0448) | Loss 5617113.500000(5611225.423412) | NFE Forward 32(30.2) | NFE Backward 99(101.7)
+Iter 0560 | Time 2.1252(2.0504) | Loss 5604975.000000(5610787.893773) | NFE Forward 32(30.4) | NFE Backward 99(101.5)
+Iter 0561 | Time 2.0573(2.0509) | Loss 5635255.500000(5612500.626209) | NFE Forward 32(30.5) | NFE Backward 99(101.3)
+Iter 0562 | Time 2.0169(2.0485) | Loss 5621182.000000(5613108.322375) | NFE Forward 32(30.6) | NFE Backward 99(101.2)
+Iter 0563 | Time 1.9800(2.0437) | Loss 5573592.000000(5610342.179808) | NFE Forward 32(30.7) | NFE Backward 99(101.0)
+Iter 0564 | Time 1.9106(2.0344) | Loss 5595672.000000(5609315.267222) | NFE Forward 26(30.4) | NFE Backward 99(100.9)
+Iter 0565 | Time 2.0181(2.0333) | Loss 5644111.000000(5611750.968516) | NFE Forward 26(30.1) | NFE Backward 99(100.7)
+Iter 0566 | Time 2.1245(2.0397) | Loss 5618280.000000(5612208.000720) | NFE Forward 26(29.8) | NFE Backward 99(100.6)
+Iter 0567 | Time 2.1356(2.0464) | Loss 5569445.000000(5609214.590670) | NFE Forward 32(29.9) | NFE Backward 105(100.9)
+Iter 0568 | Time 2.0262(2.0450) | Loss 5600944.000000(5608635.649323) | NFE Forward 26(29.7) | NFE Backward 105(101.2)
+Iter 0569 | Time 2.0166(2.0430) | Loss 5609535.000000(5608698.603870) | NFE Forward 26(29.4) | NFE Backward 99(101.1)
+Iter 0570 | Time 2.0981(2.0468) | Loss 5534916.500000(5603533.856599) | NFE Forward 26(29.2) | NFE Backward 105(101.3)
+Iter 0571 | Time 2.1375(2.0532) | Loss 5571734.500000(5601307.901637) | NFE Forward 26(28.9) | NFE Backward 105(101.6)
+Iter 0572 | Time 2.0530(2.0532) | Loss 5554697.000000(5598045.138523) | NFE Forward 32(29.2) | NFE Backward 99(101.4)
+Iter 0573 | Time 2.0877(2.0556) | Loss 5628464.000000(5600174.458826) | NFE Forward 32(29.3) | NFE Backward 99(101.2)
+Iter 0574 | Time 2.1005(2.0587) | Loss 5626861.500000(5602042.551708) | NFE Forward 26(29.1) | NFE Backward 105(101.5)
+Iter 0575 | Time 2.0162(2.0557) | Loss 5594353.000000(5601504.283089) | NFE Forward 26(28.9) | NFE Backward 99(101.3)
+Iter 0576 | Time 2.0292(2.0539) | Loss 5606303.500000(5601840.228273) | NFE Forward 26(28.7) | NFE Backward 105(101.6)
+Iter 0577 | Time 2.2901(2.0704) | Loss 5569501.000000(5599576.482293) | NFE Forward 32(28.9) | NFE Backward 111(102.2)
+Iter 0578 | Time 2.1012(2.0726) | Loss 5602519.000000(5599782.458533) | NFE Forward 26(28.7) | NFE Backward 105(102.4)
+Iter 0579 | Time 2.2431(2.0845) | Loss 5631046.000000(5601970.906436) | NFE Forward 32(29.0) | NFE Backward 105(102.6)
+Iter 0580 | Time 1.9838(2.0775) | Loss 5575020.000000(5600084.342985) | NFE Forward 32(29.2) | NFE Backward 99(102.4)
+Iter 0581 | Time 2.0248(2.0738) | Loss 5625944.000000(5601894.518976) | NFE Forward 32(29.4) | NFE Backward 99(102.1)
+Iter 0582 | Time 2.0319(2.0708) | Loss 5607191.000000(5602265.272648) | NFE Forward 26(29.1) | NFE Backward 105(102.3)
+Iter 0583 | Time 1.9811(2.0646) | Loss 5586599.000000(5601168.633562) | NFE Forward 26(28.9) | NFE Backward 99(102.1)
+Iter 0584 | Time 2.0556(2.0639) | Loss 5579752.000000(5599669.469213) | NFE Forward 26(28.7) | NFE Backward 99(101.9)
+Iter 0585 | Time 2.0640(2.0639) | Loss 5567459.000000(5597414.736368) | NFE Forward 26(28.5) | NFE Backward 105(102.1)
+Iter 0586 | Time 2.0182(2.0607) | Loss 5607394.000000(5598113.284822) | NFE Forward 32(28.8) | NFE Backward 99(101.9)
+Iter 0587 | Time 2.0183(2.0578) | Loss 5562817.500000(5595642.579885) | NFE Forward 32(29.0) | NFE Backward 99(101.7)
+Iter 0588 | Time 2.1346(2.0631) | Loss 5633331.500000(5598280.804293) | NFE Forward 32(29.2) | NFE Backward 105(101.9)
+Iter 0589 | Time 2.0275(2.0607) | Loss 5648153.500000(5601771.892992) | NFE Forward 32(29.4) | NFE Backward 105(102.1)
+Iter 0590 | Time 1.9115(2.0502) | Loss 5556759.500000(5598621.025483) | NFE Forward 26(29.2) | NFE Backward 99(101.9)
+Iter 0591 | Time 1.9143(2.0407) | Loss 5591925.500000(5598152.338699) | NFE Forward 26(28.9) | NFE Backward 99(101.7)
+Iter 0592 | Time 1.9479(2.0342) | Loss 5622580.000000(5599862.274990) | NFE Forward 26(28.7) | NFE Backward 99(101.5)
+Iter 0593 | Time 2.0274(2.0337) | Loss 5599585.500000(5599842.900741) | NFE Forward 32(29.0) | NFE Backward 105(101.8)
+Iter 0594 | Time 1.9570(2.0283) | Loss 5635027.000000(5602305.787689) | NFE Forward 26(28.8) | NFE Backward 105(102.0)
+Iter 0595 | Time 1.9956(2.0261) | Loss 5593551.500000(5601692.987551) | NFE Forward 26(28.6) | NFE Backward 105(102.2)
+Iter 0596 | Time 2.0178(2.0255) | Loss 5617892.000000(5602826.918422) | NFE Forward 32(28.8) | NFE Backward 99(102.0)
+Iter 0597 | Time 1.9112(2.0175) | Loss 5622990.000000(5604238.334133) | NFE Forward 26(28.6) | NFE Backward 99(101.8)
+Iter 0598 | Time 1.9476(2.0126) | Loss 5590116.000000(5603249.770743) | NFE Forward 26(28.4) | NFE Backward 99(101.6)
+Iter 0599 | Time 2.1478(2.0221) | Loss 5577010.500000(5601413.021791) | NFE Forward 26(28.3) | NFE Backward 111(102.2)
+Iter 0600 | Time 1.9126(2.0144) | Loss 5650787.500000(5604869.235266) | NFE Forward 26(28.1) | NFE Backward 99(102.0)
+[TEST] Iter 0600 | Test Loss 5574829.500000 | NFE 26
+Skipping vis as data dimension is >2
+Iter 0601 | Time 1.9837(2.0122) | Loss 5623702.000000(5606187.528797) | NFE Forward 26(27.9) | NFE Backward 99(101.8)
+Iter 0602 | Time 2.0665(2.0160) | Loss 5570549.000000(5603692.831782) | NFE Forward 26(27.8) | NFE Backward 105(102.0)
+Iter 0603 | Time 2.0527(2.0186) | Loss 5609097.500000(5604071.158557) | NFE Forward 26(27.7) | NFE Backward 99(101.8)
+Iter 0604 | Time 2.0186(2.0186) | Loss 5530920.000000(5598950.577458) | NFE Forward 26(27.6) | NFE Backward 99(101.6)
+Iter 0605 | Time 1.9808(2.0160) | Loss 5587401.500000(5598142.142036) | NFE Forward 26(27.5) | NFE Backward 99(101.4)
+Iter 0606 | Time 1.9789(2.0134) | Loss 5581700.000000(5596991.192093) | NFE Forward 26(27.4) | NFE Backward 99(101.3)
+Iter 0607 | Time 1.9837(2.0113) | Loss 5572455.000000(5595273.658647) | NFE Forward 26(27.3) | NFE Backward 99(101.1)
+Iter 0608 | Time 2.0309(2.0127) | Loss 5579434.000000(5594164.882541) | NFE Forward 26(27.2) | NFE Backward 105(101.4)
+Iter 0609 | Time 2.0200(2.0132) | Loss 5577425.000000(5592993.090764) | NFE Forward 26(27.1) | NFE Backward 99(101.2)
+Iter 0610 | Time 2.2608(2.0305) | Loss 5642214.000000(5596438.554410) | NFE Forward 44(28.3) | NFE Backward 111(101.9)
+Iter 0611 | Time 2.1728(2.0405) | Loss 5592388.500000(5596155.050601) | NFE Forward 38(29.0) | NFE Backward 105(102.1)
+Iter 0612 | Time 2.0216(2.0392) | Loss 5593336.000000(5595957.717059) | NFE Forward 26(28.7) | NFE Backward 99(101.9)
+Iter 0613 | Time 2.0652(2.0410) | Loss 5594586.000000(5595861.696865) | NFE Forward 26(28.6) | NFE Backward 105(102.1)
+Iter 0614 | Time 1.9820(2.0368) | Loss 5568591.000000(5593952.748085) | NFE Forward 26(28.4) | NFE Backward 99(101.9)
+Iter 0615 | Time 2.0175(2.0355) | Loss 5591882.000000(5593807.795719) | NFE Forward 26(28.2) | NFE Backward 99(101.7)
+Iter 0616 | Time 2.0170(2.0342) | Loss 5575728.000000(5592542.210018) | NFE Forward 26(28.1) | NFE Backward 99(101.5)
+Iter 0617 | Time 2.1032(2.0390) | Loss 5528824.000000(5588081.935317) | NFE Forward 26(27.9) | NFE Backward 105(101.7)
+Iter 0618 | Time 2.0660(2.0409) | Loss 5508978.000000(5582544.659845) | NFE Forward 26(27.8) | NFE Backward 105(102.0)
+Iter 0619 | Time 2.1829(2.0509) | Loss 5600116.000000(5583774.653656) | NFE Forward 26(27.7) | NFE Backward 111(102.6)
+Iter 0620 | Time 2.1072(2.0548) | Loss 5619301.000000(5586261.497900) | NFE Forward 26(27.5) | NFE Backward 105(102.8)
+Iter 0621 | Time 2.0325(2.0532) | Loss 5555472.000000(5584106.233047) | NFE Forward 26(27.4) | NFE Backward 105(102.9)
+Iter 0622 | Time 2.1710(2.0615) | Loss 5555255.000000(5582086.646734) | NFE Forward 32(27.7) | NFE Backward 105(103.1)
+Iter 0623 | Time 2.1384(2.0669) | Loss 5604797.500000(5583676.406462) | NFE Forward 32(28.0) | NFE Backward 105(103.2)
+Iter 0624 | Time 2.0171(2.0634) | Loss 5524074.500000(5579504.273010) | NFE Forward 26(27.9) | NFE Backward 99(102.9)
+Iter 0625 | Time 2.2080(2.0735) | Loss 5597899.500000(5580791.938899) | NFE Forward 38(28.6) | NFE Backward 105(103.1)
+Iter 0626 | Time 2.1882(2.0815) | Loss 5594155.500000(5581727.388176) | NFE Forward 32(28.8) | NFE Backward 111(103.6)
+Iter 0627 | Time 2.1475(2.0862) | Loss 5549203.500000(5579450.716004) | NFE Forward 38(29.5) | NFE Backward 105(103.7)
+Iter 0628 | Time 2.0634(2.0846) | Loss 5614410.000000(5581897.865884) | NFE Forward 38(30.1) | NFE Backward 99(103.4)
+Iter 0629 | Time 2.1821(2.0914) | Loss 5611463.500000(5583967.460272) | NFE Forward 26(29.8) | NFE Backward 111(103.9)
+Iter 0630 | Time 2.2209(2.1005) | Loss 5621595.500000(5586601.423053) | NFE Forward 38(30.4) | NFE Backward 111(104.4)
+Iter 0631 | Time 2.1720(2.1055) | Loss 5692366.000000(5594004.943439) | NFE Forward 38(30.9) | NFE Backward 105(104.5)
+Iter 0632 | Time 2.0900(2.1044) | Loss 5657089.000000(5598420.827398) | NFE Forward 38(31.4) | NFE Backward 99(104.1)
+Iter 0633 | Time 2.0911(2.1034) | Loss 5582408.000000(5597299.929480) | NFE Forward 38(31.9) | NFE Backward 99(103.7)
+Iter 0634 | Time 2.1448(2.1063) | Loss 5615936.000000(5598604.454417) | NFE Forward 26(31.5) | NFE Backward 111(104.2)
+Iter 0635 | Time 2.0530(2.1026) | Loss 5627761.000000(5600645.412608) | NFE Forward 32(31.5) | NFE Backward 99(103.9)
+Iter 0636 | Time 2.1333(2.1048) | Loss 5588323.500000(5599782.878725) | NFE Forward 32(31.5) | NFE Backward 105(103.9)
+Iter 0637 | Time 2.0742(2.1026) | Loss 5560196.000000(5597011.797214) | NFE Forward 38(32.0) | NFE Backward 105(104.0)
+Iter 0638 | Time 2.0250(2.0972) | Loss 5605701.000000(5597620.041409) | NFE Forward 38(32.4) | NFE Backward 99(103.7)
+Iter 0639 | Time 2.3933(2.1179) | Loss 5589448.000000(5597047.998511) | NFE Forward 32(32.4) | NFE Backward 123(105.0)
+Iter 0640 | Time 2.0198(2.1111) | Loss 5628093.500000(5599221.183615) | NFE Forward 32(32.3) | NFE Backward 99(104.6)
+Iter 0641 | Time 2.1365(2.1128) | Loss 5588354.000000(5598460.480762) | NFE Forward 26(31.9) | NFE Backward 105(104.6)
+Iter 0642 | Time 2.1719(2.1170) | Loss 5551686.000000(5595186.267109) | NFE Forward 38(32.3) | NFE Backward 105(104.7)
+Iter 0643 | Time 2.0640(2.1133) | Loss 5614985.500000(5596572.213411) | NFE Forward 26(31.9) | NFE Backward 105(104.7)
+Iter 0644 | Time 2.2030(2.1195) | Loss 5565969.000000(5594429.988472) | NFE Forward 38(32.3) | NFE Backward 105(104.7)
+Iter 0645 | Time 2.0157(2.1123) | Loss 5615873.500000(5595931.034279) | NFE Forward 38(32.7) | NFE Backward 99(104.3)
+Iter 0646 | Time 2.1322(2.1137) | Loss 5583679.000000(5595073.391880) | NFE Forward 32(32.7) | NFE Backward 105(104.3)
+Iter 0647 | Time 2.0527(2.1094) | Loss 5596436.000000(5595168.774448) | NFE Forward 38(33.0) | NFE Backward 99(104.0)
+Iter 0648 | Time 2.0160(2.1029) | Loss 5609108.000000(5596144.520237) | NFE Forward 32(33.0) | NFE Backward 99(103.6)
+Iter 0649 | Time 2.0522(2.0993) | Loss 5618985.500000(5597743.388820) | NFE Forward 32(32.9) | NFE Backward 99(103.3)
+Iter 0650 | Time 1.9458(2.0886) | Loss 5603125.500000(5598120.136603) | NFE Forward 26(32.4) | NFE Backward 99(103.0)
+Iter 0651 | Time 2.1715(2.0944) | Loss 5588492.000000(5597446.167041) | NFE Forward 38(32.8) | NFE Backward 105(103.1)
+Iter 0652 | Time 1.9813(2.0865) | Loss 5583056.000000(5596438.855348) | NFE Forward 38(33.2) | NFE Backward 99(102.9)
+Iter 0653 | Time 2.0540(2.0842) | Loss 5607079.500000(5597183.700473) | NFE Forward 38(33.5) | NFE Backward 99(102.6)
+Iter 0654 | Time 2.1337(2.0877) | Loss 5526422.500000(5592230.416440) | NFE Forward 32(33.4) | NFE Backward 105(102.8)
+Iter 0655 | Time 2.1331(2.0908) | Loss 5601679.000000(5592891.817289) | NFE Forward 38(33.7) | NFE Backward 105(102.9)
+Iter 0656 | Time 2.4182(2.1137) | Loss 5564847.500000(5590928.715079) | NFE Forward 38(34.0) | NFE Backward 123(104.3)
+Iter 0657 | Time 2.1083(2.1134) | Loss 5616241.000000(5592700.575024) | NFE Forward 44(34.7) | NFE Backward 105(104.4)
+Iter 0658 | Time 2.1017(2.1126) | Loss 5557369.000000(5590227.364772) | NFE Forward 38(35.0) | NFE Backward 105(104.4)
+Iter 0659 | Time 2.4562(2.1366) | Loss 5594373.000000(5590517.559238) | NFE Forward 38(35.2) | NFE Backward 123(105.7)
+Iter 0660 | Time 2.4255(2.1568) | Loss 5532573.000000(5586461.440091) | NFE Forward 44(35.8) | NFE Backward 123(106.9)
+Iter 0661 | Time 2.2902(2.1662) | Loss 5620637.500000(5588853.764285) | NFE Forward 38(35.9) | NFE Backward 111(107.2)
+Iter 0662 | Time 2.2221(2.1701) | Loss 5569713.000000(5587513.910785) | NFE Forward 32(35.7) | NFE Backward 111(107.5)
+Iter 0663 | Time 2.3363(2.1817) | Loss 5598111.500000(5588255.742030) | NFE Forward 38(35.8) | NFE Backward 117(108.1)
+Iter 0664 | Time 2.4062(2.1974) | Loss 5519077.500000(5583413.265088) | NFE Forward 32(35.6) | NFE Backward 117(108.8)
+Iter 0665 | Time 2.2060(2.1980) | Loss 5569100.500000(5582411.371532) | NFE Forward 38(35.7) | NFE Backward 105(108.5)
+Iter 0666 | Time 2.2534(2.2019) | Loss 5557864.000000(5580693.055525) | NFE Forward 38(35.9) | NFE Backward 111(108.7)
+Iter 0667 | Time 2.1916(2.2012) | Loss 5558606.000000(5579146.961638) | NFE Forward 38(36.0) | NFE Backward 111(108.8)
+Iter 0668 | Time 2.1433(2.1971) | Loss 5529387.000000(5575663.764323) | NFE Forward 38(36.2) | NFE Backward 105(108.6)
+Iter 0669 | Time 2.2564(2.2013) | Loss 5593742.000000(5576929.240821) | NFE Forward 38(36.3) | NFE Backward 111(108.7)
+Iter 0670 | Time 2.2582(2.2053) | Loss 5620786.000000(5579999.213963) | NFE Forward 38(36.4) | NFE Backward 111(108.9)
+Iter 0671 | Time 2.0891(2.1971) | Loss 5626837.500000(5583277.893986) | NFE Forward 38(36.5) | NFE Backward 99(108.2)
+Iter 0672 | Time 2.0208(2.1848) | Loss 5565622.000000(5582041.981407) | NFE Forward 38(36.6) | NFE Backward 99(107.6)
+Iter 0673 | Time 2.1242(2.1806) | Loss 5593006.000000(5582809.462708) | NFE Forward 44(37.1) | NFE Backward 99(107.0)
+Iter 0674 | Time 2.0875(2.1740) | Loss 5612423.500000(5584882.445319) | NFE Forward 32(36.8) | NFE Backward 99(106.4)
+Iter 0675 | Time 2.5423(2.1998) | Loss 5586100.000000(5584967.674146) | NFE Forward 38(36.9) | NFE Backward 129(108.0)
+Iter 0676 | Time 2.1266(2.1947) | Loss 5615845.500000(5587129.121956) | NFE Forward 38(37.0) | NFE Backward 99(107.4)
+Iter 0677 | Time 2.1388(2.1908) | Loss 5579031.500000(5586562.288419) | NFE Forward 32(36.6) | NFE Backward 105(107.2)
+Iter 0678 | Time 2.1048(2.1848) | Loss 5538878.000000(5583224.388230) | NFE Forward 38(36.7) | NFE Backward 105(107.0)
+Iter 0679 | Time 2.1982(2.1857) | Loss 5563768.000000(5581862.441054) | NFE Forward 44(37.2) | NFE Backward 99(106.5)
+Iter 0680 | Time 2.3158(2.1948) | Loss 5648183.500000(5586504.915180) | NFE Forward 38(37.3) | NFE Backward 117(107.2)
+Iter 0681 | Time 2.2149(2.1962) | Loss 5595941.000000(5587165.441117) | NFE Forward 32(36.9) | NFE Backward 105(107.1)
+Iter 0682 | Time 2.2645(2.2010) | Loss 5604792.000000(5588399.300239) | NFE Forward 38(37.0) | NFE Backward 111(107.3)
+Iter 0683 | Time 2.1777(2.1994) | Loss 5599835.500000(5589199.834222) | NFE Forward 32(36.6) | NFE Backward 105(107.2)
+Iter 0684 | Time 2.1773(2.1978) | Loss 5582988.500000(5588765.040827) | NFE Forward 38(36.7) | NFE Backward 105(107.0)
+Iter 0685 | Time 2.2571(2.2020) | Loss 5539402.000000(5585309.627969) | NFE Forward 38(36.8) | NFE Backward 111(107.3)
+Iter 0686 | Time 2.1782(2.2003) | Loss 5523668.000000(5580994.714011) | NFE Forward 38(36.9) | NFE Backward 105(107.1)
+Iter 0687 | Time 2.4188(2.2156) | Loss 5582490.000000(5581099.384030) | NFE Forward 38(37.0) | NFE Backward 117(107.8)
+Iter 0688 | Time 2.5718(2.2405) | Loss 5582062.000000(5581166.767148) | NFE Forward 38(37.0) | NFE Backward 123(108.9)
+Iter 0689 | Time 2.3484(2.2481) | Loss 5519753.000000(5576867.803448) | NFE Forward 38(37.1) | NFE Backward 117(109.5)
+Iter 0690 | Time 2.2274(2.2466) | Loss 5544699.000000(5574615.987207) | NFE Forward 32(36.8) | NFE Backward 111(109.6)
+Iter 0691 | Time 2.0767(2.2347) | Loss 5601785.500000(5576517.853102) | NFE Forward 32(36.4) | NFE Backward 105(109.2)
+Iter 0692 | Time 2.1754(2.2306) | Loss 5523043.000000(5572774.613385) | NFE Forward 32(36.1) | NFE Backward 105(108.9)
+Iter 0693 | Time 2.3051(2.2358) | Loss 5579466.000000(5573243.010448) | NFE Forward 32(35.8) | NFE Backward 117(109.5)
+Iter 0694 | Time 2.0997(2.2263) | Loss 5506536.500000(5568573.554717) | NFE Forward 32(35.6) | NFE Backward 105(109.2)
+Iter 0695 | Time 2.2209(2.2259) | Loss 5553096.500000(5567490.160886) | NFE Forward 32(35.3) | NFE Backward 111(109.3)
+Iter 0696 | Time 2.3049(2.2314) | Loss 5571142.500000(5567745.824624) | NFE Forward 32(35.1) | NFE Backward 117(109.9)
+Iter 0697 | Time 2.2920(2.2357) | Loss 5564171.500000(5567495.621901) | NFE Forward 38(35.3) | NFE Backward 111(109.9)
+Iter 0698 | Time 2.2575(2.2372) | Loss 5576362.000000(5568116.268368) | NFE Forward 32(35.1) | NFE Backward 111(110.0)
+Iter 0699 | Time 2.1760(2.2329) | Loss 5620694.000000(5571796.709582) | NFE Forward 38(35.3) | NFE Backward 105(109.7)
+Iter 0700 | Time 2.3800(2.2432) | Loss 5513257.500000(5567698.964911) | NFE Forward 32(35.0) | NFE Backward 117(110.2)
+[TEST] Iter 0700 | Test Loss 5564843.500000 | NFE 32
+Skipping vis as data dimension is >2
+Iter 0701 | Time 2.2598(2.2444) | Loss 5621593.500000(5571471.582367) | NFE Forward 38(35.2) | NFE Backward 111(110.2)
+Iter 0702 | Time 2.3067(2.2487) | Loss 5560913.000000(5570732.481602) | NFE Forward 32(35.0) | NFE Backward 117(110.7)
+Iter 0703 | Time 2.0561(2.2352) | Loss 5485080.000000(5564736.807890) | NFE Forward 32(34.8) | NFE Backward 99(109.9)
+Iter 0704 | Time 2.1016(2.2259) | Loss 5592095.000000(5566651.881337) | NFE Forward 32(34.6) | NFE Backward 105(109.5)
+Iter 0705 | Time 2.5908(2.2514) | Loss 5566467.500000(5566638.974644) | NFE Forward 32(34.4) | NFE Backward 135(111.3)
+Iter 0706 | Time 2.1029(2.2410) | Loss 5545187.500000(5565137.371419) | NFE Forward 32(34.3) | NFE Backward 105(110.9)
+Iter 0707 | Time 2.2589(2.2423) | Loss 5532849.000000(5562877.185419) | NFE Forward 32(34.1) | NFE Backward 111(110.9)
+Iter 0708 | Time 2.2579(2.2434) | Loss 5554604.500000(5562298.097440) | NFE Forward 38(34.4) | NFE Backward 111(110.9)
+Iter 0709 | Time 2.1762(2.2387) | Loss 5595622.000000(5564630.770619) | NFE Forward 32(34.2) | NFE Backward 105(110.5)
+Iter 0710 | Time 2.1064(2.2294) | Loss 5579346.500000(5565660.871676) | NFE Forward 32(34.0) | NFE Backward 105(110.1)
+Iter 0711 | Time 2.1234(2.2220) | Loss 5528291.500000(5563045.015659) | NFE Forward 38(34.3) | NFE Backward 99(109.3)
+Iter 0712 | Time 2.1022(2.2136) | Loss 5557274.500000(5562641.079562) | NFE Forward 38(34.6) | NFE Backward 105(109.0)
+Iter 0713 | Time 2.1764(2.2110) | Loss 5573566.000000(5563405.823993) | NFE Forward 38(34.8) | NFE Backward 105(108.7)
+Iter 0714 | Time 2.4169(2.2254) | Loss 5564238.000000(5563464.076314) | NFE Forward 44(35.5) | NFE Backward 117(109.3)
+Iter 0715 | Time 2.2928(2.2301) | Loss 5610133.000000(5566730.900972) | NFE Forward 38(35.6) | NFE Backward 111(109.4)
+Iter 0716 | Time 2.2221(2.2296) | Loss 5512117.500000(5562907.962904) | NFE Forward 38(35.8) | NFE Backward 111(109.5)
+Iter 0717 | Time 2.3412(2.2374) | Loss 5586438.500000(5564555.100500) | NFE Forward 38(36.0) | NFE Backward 117(110.1)
+Iter 0718 | Time 2.1410(2.2306) | Loss 5592126.000000(5566485.063465) | NFE Forward 38(36.1) | NFE Backward 105(109.7)
+Iter 0719 | Time 2.1552(2.2254) | Loss 5535827.000000(5564338.999023) | NFE Forward 32(35.8) | NFE Backward 111(109.8)
+Iter 0720 | Time 2.3940(2.2372) | Loss 5615992.000000(5567954.709091) | NFE Forward 32(35.5) | NFE Backward 123(110.7)
+Iter 0721 | Time 2.3444(2.2447) | Loss 5524763.000000(5564931.289455) | NFE Forward 38(35.7) | NFE Backward 117(111.2)
+Iter 0722 | Time 2.5593(2.2667) | Loss 5517917.000000(5561640.289193) | NFE Forward 32(35.5) | NFE Backward 135(112.8)
+Iter 0723 | Time 2.2742(2.2672) | Loss 5554826.000000(5561163.288949) | NFE Forward 32(35.2) | NFE Backward 117(113.1)
+Iter 0724 | Time 2.2750(2.2678) | Loss 5559267.500000(5561030.583723) | NFE Forward 38(35.4) | NFE Backward 117(113.4)
+Iter 0725 | Time 2.3795(2.2756) | Loss 5565461.500000(5561340.747862) | NFE Forward 38(35.6) | NFE Backward 117(113.6)
+Iter 0726 | Time 2.6172(2.2995) | Loss 5554981.000000(5560895.565512) | NFE Forward 44(36.2) | NFE Backward 129(114.7)
+Iter 0727 | Time 2.2935(2.2991) | Loss 5641633.500000(5566547.220926) | NFE Forward 38(36.3) | NFE Backward 111(114.5)
+Iter 0728 | Time 2.4662(2.3108) | Loss 5546669.500000(5565155.780461) | NFE Forward 32(36.0) | NFE Backward 123(115.1)
+Iter 0729 | Time 2.4495(2.3205) | Loss 5582810.500000(5566391.610829) | NFE Forward 38(36.1) | NFE Backward 117(115.2)
+Iter 0730 | Time 2.3431(2.3221) | Loss 5538283.000000(5564424.008071) | NFE Forward 38(36.3) | NFE Backward 117(115.3)
+Iter 0731 | Time 2.4848(2.3335) | Loss 5527036.000000(5561806.847506) | NFE Forward 38(36.4) | NFE Backward 117(115.4)
+Iter 0732 | Time 2.7258(2.3609) | Loss 5555012.000000(5561331.208181) | NFE Forward 38(36.5) | NFE Backward 147(117.6)
+Iter 0733 | Time 2.3842(2.3626) | Loss 5659975.500000(5568236.308608) | NFE Forward 38(36.6) | NFE Backward 117(117.6)
+Iter 0734 | Time 2.4618(2.3695) | Loss 5568912.500000(5568283.642005) | NFE Forward 38(36.7) | NFE Backward 123(118.0)
+Iter 0735 | Time 2.4184(2.3729) | Loss 5601425.500000(5570603.572065) | NFE Forward 38(36.8) | NFE Backward 117(117.9)
+Iter 0736 | Time 2.5349(2.3843) | Loss 5549598.000000(5569133.182020) | NFE Forward 50(37.7) | NFE Backward 123(118.3)
+Iter 0737 | Time 2.5117(2.3932) | Loss 5567149.000000(5568994.289279) | NFE Forward 38(37.7) | NFE Backward 129(119.0)
+Iter 0738 | Time 2.4609(2.3979) | Loss 5577788.000000(5569609.849030) | NFE Forward 38(37.8) | NFE Backward 123(119.3)
+Iter 0739 | Time 2.4253(2.3998) | Loss 5603879.000000(5572008.689597) | NFE Forward 38(37.8) | NFE Backward 123(119.6)
+Iter 0740 | Time 2.4262(2.4017) | Loss 5607955.500000(5574524.966326) | NFE Forward 32(37.4) | NFE Backward 123(119.8)
+Iter 0741 | Time 2.4133(2.4025) | Loss 5555875.500000(5573219.503683) | NFE Forward 38(37.4) | NFE Backward 117(119.6)
+Iter 0742 | Time 2.5052(2.4097) | Loss 5613039.000000(5576006.868425) | NFE Forward 32(37.0) | NFE Backward 129(120.3)
+Iter 0743 | Time 2.5455(2.4192) | Loss 5563298.000000(5575117.247635) | NFE Forward 38(37.1) | NFE Backward 129(120.9)
+Iter 0744 | Time 2.6295(2.4339) | Loss 5602249.500000(5577016.505301) | NFE Forward 32(36.7) | NFE Backward 135(121.9)
+Iter 0745 | Time 2.5825(2.4443) | Loss 5572105.000000(5576672.699930) | NFE Forward 38(36.8) | NFE Backward 129(122.4)
+Iter 0746 | Time 2.8295(2.4713) | Loss 5530361.500000(5573430.915935) | NFE Forward 38(36.9) | NFE Backward 129(122.8)
+Iter 0747 | Time 2.5357(2.4758) | Loss 5533916.500000(5570664.906819) | NFE Forward 44(37.4) | NFE Backward 123(122.8)
+Iter 0748 | Time 2.5432(2.4805) | Loss 5521755.000000(5567241.213342) | NFE Forward 32(37.0) | NFE Backward 129(123.3)
+Iter 0749 | Time 2.7810(2.5015) | Loss 5558461.500000(5566626.633408) | NFE Forward 32(36.7) | NFE Backward 141(124.5)
+Iter 0750 | Time 2.6215(2.5099) | Loss 5573426.000000(5567102.589069) | NFE Forward 38(36.8) | NFE Backward 129(124.8)
+Iter 0751 | Time 2.3447(2.4984) | Loss 5509047.000000(5563038.697835) | NFE Forward 32(36.4) | NFE Backward 117(124.3)
+Iter 0752 | Time 2.4284(2.4935) | Loss 5560586.500000(5562867.043986) | NFE Forward 32(36.1) | NFE Backward 123(124.2)
+Iter 0753 | Time 2.4530(2.4906) | Loss 5571299.000000(5563457.280907) | NFE Forward 38(36.3) | NFE Backward 117(123.7)
+Iter 0754 | Time 2.5337(2.4937) | Loss 5540296.000000(5561835.991244) | NFE Forward 38(36.4) | NFE Backward 123(123.6)
+Iter 0755 | Time 2.5312(2.4963) | Loss 5542237.000000(5560464.061857) | NFE Forward 38(36.5) | NFE Backward 123(123.6)
+Iter 0756 | Time 2.5631(2.5010) | Loss 5579445.000000(5561792.727527) | NFE Forward 50(37.4) | NFE Backward 117(123.1)
+Iter 0757 | Time 2.8364(2.5244) | Loss 5551927.000000(5561102.126600) | NFE Forward 44(37.9) | NFE Backward 147(124.8)
+Iter 0758 | Time 2.8586(2.5478) | Loss 5541665.000000(5559741.527738) | NFE Forward 50(38.7) | NFE Backward 141(125.9)
+Iter 0759 | Time 2.5837(2.5503) | Loss 5587797.500000(5561705.445796) | NFE Forward 44(39.1) | NFE Backward 129(126.1)
+Iter 0760 | Time 2.6768(2.5592) | Loss 5520223.000000(5558801.674590) | NFE Forward 32(38.6) | NFE Backward 141(127.2)
+Iter 0761 | Time 2.4300(2.5502) | Loss 5532332.000000(5556948.797369) | NFE Forward 32(38.2) | NFE Backward 123(126.9)
+Iter 0762 | Time 2.6603(2.5579) | Loss 5521806.000000(5554488.801553) | NFE Forward 38(38.1) | NFE Backward 135(127.5)
+Iter 0763 | Time 2.6501(2.5643) | Loss 5557801.500000(5554720.690444) | NFE Forward 38(38.1) | NFE Backward 129(127.6)
+Iter 0764 | Time 2.5083(2.5604) | Loss 5544889.000000(5554032.472113) | NFE Forward 38(38.1) | NFE Backward 129(127.7)
+Iter 0765 | Time 2.7746(2.5754) | Loss 5605589.500000(5557641.464065) | NFE Forward 50(39.0) | NFE Backward 135(128.2)
+Iter 0766 | Time 2.7837(2.5900) | Loss 5581369.000000(5559302.391581) | NFE Forward 38(38.9) | NFE Backward 141(129.1)
+Iter 0767 | Time 2.5820(2.5894) | Loss 5526406.000000(5556999.644170) | NFE Forward 38(38.8) | NFE Backward 129(129.1)
+Iter 0768 | Time 2.5798(2.5887) | Loss 5577861.000000(5558459.939078) | NFE Forward 44(39.2) | NFE Backward 129(129.1)
+Iter 0769 | Time 2.5817(2.5883) | Loss 5542931.500000(5557372.948343) | NFE Forward 38(39.1) | NFE Backward 129(129.1)
+Iter 0770 | Time 2.5333(2.5844) | Loss 5534591.500000(5555778.246959) | NFE Forward 44(39.4) | NFE Backward 123(128.6)
+Iter 0771 | Time 2.5781(2.5840) | Loss 5591087.500000(5558249.894672) | NFE Forward 38(39.3) | NFE Backward 129(128.7)
+Iter 0772 | Time 2.3890(2.5703) | Loss 5590927.500000(5560537.327045) | NFE Forward 32(38.8) | NFE Backward 123(128.3)
+Iter 0773 | Time 2.6630(2.5768) | Loss 5519745.000000(5557681.864152) | NFE Forward 44(39.2) | NFE Backward 135(128.7)
+Iter 0774 | Time 2.5449(2.5746) | Loss 5542247.000000(5556601.423661) | NFE Forward 38(39.1) | NFE Backward 129(128.8)
+Iter 0775 | Time 2.5010(2.5694) | Loss 5545548.000000(5555827.684005) | NFE Forward 44(39.5) | NFE Backward 123(128.4)
+Iter 0776 | Time 2.5012(2.5647) | Loss 5539119.500000(5554658.111124) | NFE Forward 44(39.8) | NFE Backward 123(128.0)
+Iter 0777 | Time 2.4262(2.5550) | Loss 5587498.500000(5556956.938346) | NFE Forward 32(39.2) | NFE Backward 123(127.6)
+Iter 0778 | Time 2.5858(2.5571) | Loss 5561642.000000(5557284.892661) | NFE Forward 44(39.6) | NFE Backward 129(127.7)
+Iter 0779 | Time 2.7853(2.5731) | Loss 5616111.000000(5561402.720175) | NFE Forward 44(39.9) | NFE Backward 141(128.7)
+Iter 0780 | Time 2.3932(2.5605) | Loss 5581167.500000(5562786.254763) | NFE Forward 38(39.7) | NFE Backward 123(128.3)
+Iter 0781 | Time 2.8234(2.5789) | Loss 5541822.000000(5561318.756929) | NFE Forward 44(40.0) | NFE Backward 141(129.2)
+Iter 0782 | Time 2.7164(2.5885) | Loss 5544513.000000(5560142.353944) | NFE Forward 38(39.9) | NFE Backward 141(130.0)
+Iter 0783 | Time 2.8108(2.6041) | Loss 5557768.000000(5559976.149168) | NFE Forward 56(41.0) | NFE Backward 135(130.3)
+Iter 0784 | Time 2.8466(2.6211) | Loss 5596182.000000(5562510.558727) | NFE Forward 56(42.1) | NFE Backward 135(130.7)
+Iter 0785 | Time 2.8021(2.6337) | Loss 5557763.000000(5562178.229616) | NFE Forward 62(43.5) | NFE Backward 129(130.5)
+Iter 0786 | Time 2.6159(2.6325) | Loss 5577465.000000(5563248.303543) | NFE Forward 38(43.1) | NFE Backward 129(130.4)
+Iter 0787 | Time 2.5711(2.6282) | Loss 5516856.000000(5560000.842295) | NFE Forward 56(44.0) | NFE Backward 123(129.9)
+Iter 0788 | Time 2.5476(2.6225) | Loss 5558909.500000(5559924.448334) | NFE Forward 44(44.0) | NFE Backward 129(129.9)
+Iter 0789 | Time 2.5528(2.6177) | Loss 5531875.000000(5557960.986951) | NFE Forward 38(43.6) | NFE Backward 129(129.8)
+Iter 0790 | Time 2.7317(2.6256) | Loss 5585430.000000(5559883.817864) | NFE Forward 62(44.9) | NFE Backward 129(129.7)
+Iter 0791 | Time 2.8350(2.6403) | Loss 5550131.000000(5559201.120614) | NFE Forward 50(45.2) | NFE Backward 147(130.9)
+Iter 0792 | Time 2.5966(2.6372) | Loss 5522027.000000(5556598.932171) | NFE Forward 38(44.7) | NFE Backward 135(131.2)
+Iter 0793 | Time 2.6377(2.6373) | Loss 5550651.000000(5556182.576919) | NFE Forward 44(44.7) | NFE Backward 135(131.5)
+Iter 0794 | Time 2.5458(2.6309) | Loss 5513235.500000(5553176.281534) | NFE Forward 32(43.8) | NFE Backward 129(131.3)
+Iter 0795 | Time 3.1555(2.6676) | Loss 5499694.000000(5549432.521827) | NFE Forward 50(44.2) | NFE Backward 147(132.4)
+Iter 0796 | Time 2.4921(2.6553) | Loss 5573915.500000(5551146.330299) | NFE Forward 44(44.2) | NFE Backward 117(131.3)
+Iter 0797 | Time 2.8131(2.6663) | Loss 5563095.000000(5551982.737178) | NFE Forward 38(43.8) | NFE Backward 135(131.6)
+Iter 0798 | Time 2.8511(2.6793) | Loss 5549054.500000(5551777.760576) | NFE Forward 50(44.2) | NFE Backward 135(131.8)
+Iter 0799 | Time 2.9447(2.6979) | Loss 5551641.000000(5551768.187335) | NFE Forward 38(43.8) | NFE Backward 147(132.9)
+Iter 0800 | Time 2.5509(2.6876) | Loss 5552080.000000(5551790.014222) | NFE Forward 38(43.4) | NFE Backward 129(132.6)
+[TEST] Iter 0800 | Test Loss 5554244.000000 | NFE 38
+Skipping vis as data dimension is >2
+Iter 0801 | Time 2.5792(2.6800) | Loss 5550033.000000(5551667.023226) | NFE Forward 44(43.4) | NFE Backward 123(131.9)
+Iter 0802 | Time 3.2191(2.7177) | Loss 5542462.000000(5551022.671601) | NFE Forward 50(43.9) | NFE Backward 159(133.8)
+Iter 0803 | Time 2.7427(2.7195) | Loss 5586562.000000(5553510.424588) | NFE Forward 44(43.9) | NFE Backward 135(133.9)
+Iter 0804 | Time 2.5192(2.7055) | Loss 5524794.500000(5551500.309867) | NFE Forward 50(44.3) | NFE Backward 111(132.3)
+Iter 0805 | Time 2.4315(2.6863) | Loss 5618299.000000(5556176.218177) | NFE Forward 44(44.3) | NFE Backward 123(131.7)
+Iter 0806 | Time 2.5031(2.6735) | Loss 5557074.000000(5556239.062904) | NFE Forward 44(44.3) | NFE Backward 123(131.1)
+Iter 0807 | Time 2.6088(2.6689) | Loss 5525814.000000(5554109.308501) | NFE Forward 44(44.2) | NFE Backward 123(130.5)
+Iter 0808 | Time 2.6394(2.6669) | Loss 5522611.500000(5551904.461906) | NFE Forward 44(44.2) | NFE Backward 135(130.8)
+Iter 0809 | Time 2.7551(2.6730) | Loss 5530423.500000(5550400.794572) | NFE Forward 44(44.2) | NFE Backward 141(131.5)
+Iter 0810 | Time 2.6584(2.6720) | Loss 5532067.000000(5549117.428952) | NFE Forward 44(44.2) | NFE Backward 129(131.3)
+Iter 0811 | Time 2.9303(2.6901) | Loss 5594071.500000(5552264.213926) | NFE Forward 50(44.6) | NFE Backward 141(132.0)
+Iter 0812 | Time 2.8866(2.7038) | Loss 5514222.000000(5549601.258951) | NFE Forward 56(45.4) | NFE Backward 135(132.2)
+Iter 0813 | Time 2.4696(2.6875) | Loss 5602441.500000(5553300.075824) | NFE Forward 50(45.7) | NFE Backward 123(131.6)
+Iter 0814 | Time 2.8564(2.6993) | Loss 5504900.500000(5549912.105517) | NFE Forward 50(46.0) | NFE Backward 141(132.2)
+Iter 0815 | Time 2.8984(2.7132) | Loss 5567627.500000(5551152.183130) | NFE Forward 44(45.9) | NFE Backward 141(132.9)
+Iter 0816 | Time 2.9425(2.7293) | Loss 5513086.000000(5548487.550311) | NFE Forward 44(45.8) | NFE Backward 147(133.8)
+Iter 0817 | Time 2.6590(2.7244) | Loss 5561489.000000(5549397.651790) | NFE Forward 56(46.5) | NFE Backward 129(133.5)
+Iter 0818 | Time 2.6194(2.7170) | Loss 5499915.500000(5545933.901164) | NFE Forward 50(46.7) | NFE Backward 129(133.2)
+Iter 0819 | Time 3.0297(2.7389) | Loss 5503302.000000(5542949.668083) | NFE Forward 50(46.9) | NFE Backward 153(134.6)
+Iter 0820 | Time 3.1235(2.7658) | Loss 5609610.000000(5547615.891317) | NFE Forward 56(47.6) | NFE Backward 147(135.4)
+Iter 0821 | Time 3.1245(2.7909) | Loss 5541003.500000(5547153.023925) | NFE Forward 56(48.2) | NFE Backward 147(136.3)
+Iter 0822 | Time 2.5672(2.7753) | Loss 5568318.000000(5548634.572250) | NFE Forward 50(48.3) | NFE Backward 117(134.9)
+Iter 0823 | Time 2.6502(2.7665) | Loss 5505937.000000(5545645.742193) | NFE Forward 44(48.0) | NFE Backward 123(134.1)
+Iter 0824 | Time 3.0192(2.7842) | Loss 5564101.000000(5546937.610239) | NFE Forward 38(47.3) | NFE Backward 147(135.0)
+Iter 0825 | Time 2.5486(2.7677) | Loss 5509491.000000(5544316.347522) | NFE Forward 38(46.6) | NFE Backward 129(134.6)
+Iter 0826 | Time 3.0505(2.7875) | Loss 5510588.500000(5541955.398196) | NFE Forward 44(46.5) | NFE Backward 147(135.4)
+Iter 0827 | Time 2.8037(2.7886) | Loss 5509177.500000(5539660.945322) | NFE Forward 38(45.9) | NFE Backward 147(136.2)
+Iter 0828 | Time 2.8133(2.7904) | Loss 5627523.000000(5545811.289150) | NFE Forward 50(46.2) | NFE Backward 135(136.2)
+Iter 0829 | Time 2.9092(2.7987) | Loss 5504193.000000(5542898.008909) | NFE Forward 44(46.0) | NFE Backward 147(136.9)
+Iter 0830 | Time 2.9704(2.8107) | Loss 5539814.000000(5542682.128285) | NFE Forward 50(46.3) | NFE Backward 141(137.2)
+Iter 0831 | Time 2.7299(2.8050) | Loss 5576220.500000(5545029.814305) | NFE Forward 44(46.1) | NFE Backward 129(136.6)
+Iter 0832 | Time 2.7826(2.8035) | Loss 5536517.000000(5544433.917304) | NFE Forward 56(46.8) | NFE Backward 135(136.5)
+Iter 0833 | Time 2.9367(2.8128) | Loss 5533737.000000(5543685.133093) | NFE Forward 56(47.5) | NFE Backward 141(136.8)
+Iter 0834 | Time 3.4127(2.8548) | Loss 5599357.000000(5547582.163776) | NFE Forward 50(47.6) | NFE Backward 165(138.8)
+Iter 0835 | Time 3.1430(2.8750) | Loss 5481773.500000(5542975.557312) | NFE Forward 44(47.4) | NFE Backward 153(139.8)
+Iter 0836 | Time 3.1400(2.8935) | Loss 5472522.000000(5538043.808300) | NFE Forward 44(47.1) | NFE Backward 153(140.7)
+Iter 0837 | Time 2.6112(2.8738) | Loss 5543820.500000(5538448.176719) | NFE Forward 44(46.9) | NFE Backward 123(139.5)
+Iter 0838 | Time 2.8949(2.8752) | Loss 5516637.500000(5536921.429349) | NFE Forward 50(47.1) | NFE Backward 141(139.6)
+Iter 0839 | Time 3.0187(2.8853) | Loss 5505324.500000(5534709.644294) | NFE Forward 44(46.9) | NFE Backward 147(140.1)
+Iter 0840 | Time 2.6600(2.8695) | Loss 5551185.500000(5535862.954194) | NFE Forward 38(46.3) | NFE Backward 129(139.3)
+Iter 0841 | Time 2.8583(2.8687) | Loss 5514777.000000(5534386.937400) | NFE Forward 56(47.0) | NFE Backward 141(139.4)
+Iter 0842 | Time 2.6244(2.8516) | Loss 5512262.000000(5532838.191782) | NFE Forward 44(46.8) | NFE Backward 129(138.7)
+Iter 0843 | Time 3.0000(2.8620) | Loss 5589177.500000(5536781.943357) | NFE Forward 50(47.0) | NFE Backward 141(138.9)
+Iter 0844 | Time 3.1922(2.8851) | Loss 5460238.000000(5531423.867322) | NFE Forward 50(47.2) | NFE Backward 159(140.3)
+Iter 0845 | Time 2.8965(2.8859) | Loss 5587817.000000(5535371.386610) | NFE Forward 44(47.0) | NFE Backward 141(140.3)
+Iter 0846 | Time 3.0625(2.8983) | Loss 5571138.000000(5537875.049547) | NFE Forward 38(46.4) | NFE Backward 153(141.2)
+Iter 0847 | Time 2.7733(2.8895) | Loss 5521969.000000(5536761.626079) | NFE Forward 44(46.2) | NFE Backward 135(140.8)
+Iter 0848 | Time 3.0740(2.9024) | Loss 5539207.500000(5536932.837253) | NFE Forward 44(46.0) | NFE Backward 159(142.1)
+Iter 0849 | Time 3.3044(2.9306) | Loss 5607531.000000(5541874.708646) | NFE Forward 44(45.9) | NFE Backward 159(143.2)
+Iter 0850 | Time 3.1991(2.9494) | Loss 5577072.000000(5544338.519040) | NFE Forward 50(46.2) | NFE Backward 159(144.3)
+Iter 0851 | Time 3.0808(2.9586) | Loss 5510993.000000(5542004.332708) | NFE Forward 44(46.0) | NFE Backward 153(145.0)
+Iter 0852 | Time 3.0574(2.9655) | Loss 5545682.000000(5542261.769418) | NFE Forward 50(46.3) | NFE Backward 147(145.1)
+Iter 0853 | Time 2.9978(2.9678) | Loss 5456418.000000(5536252.705559) | NFE Forward 44(46.1) | NFE Backward 153(145.6)
+Iter 0854 | Time 2.7940(2.9556) | Loss 5504773.500000(5534049.161170) | NFE Forward 44(46.0) | NFE Backward 141(145.3)
+Iter 0855 | Time 2.7210(2.9392) | Loss 5501382.000000(5531762.459888) | NFE Forward 44(45.9) | NFE Backward 135(144.6)
+Iter 0856 | Time 3.2762(2.9628) | Loss 5586993.500000(5535628.632696) | NFE Forward 50(46.1) | NFE Backward 165(146.0)
+Iter 0857 | Time 2.9473(2.9617) | Loss 5553756.000000(5536897.548407) | NFE Forward 56(46.8) | NFE Backward 141(145.7)
+Iter 0858 | Time 2.9477(2.9607) | Loss 5540395.000000(5537142.370018) | NFE Forward 44(46.6) | NFE Backward 141(145.3)
+Iter 0859 | Time 3.1161(2.9716) | Loss 5538397.000000(5537230.194117) | NFE Forward 50(46.9) | NFE Backward 153(145.9)
+Iter 0860 | Time 2.6765(2.9509) | Loss 5563135.500000(5539043.565529) | NFE Forward 50(47.1) | NFE Backward 129(144.7)
+Iter 0861 | Time 3.0309(2.9565) | Loss 5507708.000000(5536850.075942) | NFE Forward 50(47.3) | NFE Backward 147(144.9)
+Iter 0862 | Time 2.9950(2.9592) | Loss 5512095.000000(5535117.220626) | NFE Forward 44(47.1) | NFE Backward 147(145.0)
+Iter 0863 | Time 2.9847(2.9610) | Loss 5529298.000000(5534709.875182) | NFE Forward 44(46.8) | NFE Backward 141(144.7)
+Iter 0864 | Time 3.3865(2.9908) | Loss 5586550.000000(5538338.683919) | NFE Forward 56(47.5) | NFE Backward 165(146.2)
+Iter 0865 | Time 2.9984(2.9913) | Loss 5527135.000000(5537554.426045) | NFE Forward 50(47.7) | NFE Backward 147(146.2)
+Iter 0866 | Time 2.8756(2.9832) | Loss 5538918.500000(5537649.911222) | NFE Forward 50(47.8) | NFE Backward 141(145.8)
+Iter 0867 | Time 3.1638(2.9959) | Loss 5482156.500000(5533765.372436) | NFE Forward 44(47.6) | NFE Backward 159(146.8)
+Iter 0868 | Time 3.0272(2.9981) | Loss 5497882.000000(5531253.536366) | NFE Forward 50(47.7) | NFE Backward 147(146.8)
+Iter 0869 | Time 3.1986(3.0121) | Loss 5582129.500000(5534814.853820) | NFE Forward 62(48.7) | NFE Backward 159(147.6)
+Iter 0870 | Time 2.9116(3.0051) | Loss 5515439.000000(5533458.544053) | NFE Forward 50(48.8) | NFE Backward 141(147.2)
+Iter 0871 | Time 2.6337(2.9791) | Loss 5539880.000000(5533908.045969) | NFE Forward 44(48.5) | NFE Backward 129(145.9)
+Iter 0872 | Time 3.2850(3.0005) | Loss 5520112.000000(5532942.322751) | NFE Forward 62(49.4) | NFE Backward 165(147.2)
+Iter 0873 | Time 3.0437(3.0035) | Loss 5511535.500000(5531443.845159) | NFE Forward 56(49.9) | NFE Backward 153(147.6)
+Iter 0874 | Time 2.9481(2.9996) | Loss 5517344.500000(5530456.890998) | NFE Forward 62(50.7) | NFE Backward 141(147.2)
+Iter 0875 | Time 3.2364(3.0162) | Loss 5522450.500000(5529896.443628) | NFE Forward 62(51.5) | NFE Backward 159(148.0)
+Iter 0876 | Time 3.2100(3.0298) | Loss 5517041.500000(5528996.597574) | NFE Forward 44(51.0) | NFE Backward 165(149.2)
+Iter 0877 | Time 3.4572(3.0597) | Loss 5487550.500000(5526095.370744) | NFE Forward 56(51.3) | NFE Backward 165(150.3)
+Iter 0878 | Time 3.0305(3.0576) | Loss 5528885.500000(5526290.679792) | NFE Forward 56(51.7) | NFE Backward 147(150.1)
+Iter 0879 | Time 2.8410(3.0425) | Loss 5532206.000000(5526704.752206) | NFE Forward 44(51.1) | NFE Backward 141(149.4)
+Iter 0880 | Time 2.9142(3.0335) | Loss 5510912.500000(5525599.294552) | NFE Forward 50(51.1) | NFE Backward 141(148.8)
+Iter 0881 | Time 3.1186(3.0395) | Loss 5483318.000000(5522639.603933) | NFE Forward 62(51.8) | NFE Backward 153(149.1)
+Iter 0882 | Time 2.9924(3.0362) | Loss 5519873.500000(5522445.976658) | NFE Forward 56(52.1) | NFE Backward 147(149.0)
+Iter 0883 | Time 3.4326(3.0639) | Loss 5536064.000000(5523399.238292) | NFE Forward 62(52.8) | NFE Backward 171(150.5)
+Iter 0884 | Time 3.3047(3.0808) | Loss 5504507.000000(5522076.781611) | NFE Forward 68(53.9) | NFE Backward 159(151.1)
+Iter 0885 | Time 3.0335(3.0774) | Loss 5550189.000000(5524044.636899) | NFE Forward 50(53.6) | NFE Backward 147(150.8)
+Iter 0886 | Time 3.4510(3.1036) | Loss 5520463.500000(5523793.957316) | NFE Forward 62(54.2) | NFE Backward 177(152.7)
+Iter 0887 | Time 3.1181(3.1046) | Loss 5630168.000000(5531240.140304) | NFE Forward 56(54.3) | NFE Backward 153(152.7)
+Iter 0888 | Time 3.0767(3.1027) | Loss 5522525.000000(5530630.080482) | NFE Forward 50(54.0) | NFE Backward 153(152.7)
+Iter 0889 | Time 3.2771(3.1149) | Loss 5519171.500000(5529827.979849) | NFE Forward 50(53.7) | NFE Backward 165(153.6)
+Iter 0890 | Time 3.2372(3.1234) | Loss 5534829.000000(5530178.051259) | NFE Forward 50(53.5) | NFE Backward 165(154.4)
+Iter 0891 | Time 3.1066(3.1223) | Loss 5518704.000000(5529374.867671) | NFE Forward 50(53.2) | NFE Backward 153(154.3)
+Iter 0892 | Time 2.9552(3.1106) | Loss 5572728.000000(5532409.586934) | NFE Forward 44(52.6) | NFE Backward 147(153.8)
+Iter 0893 | Time 2.6949(3.0815) | Loss 5512990.000000(5531050.215849) | NFE Forward 56(52.8) | NFE Backward 123(151.6)
+Iter 0894 | Time 3.0503(3.0793) | Loss 5517532.000000(5530103.940739) | NFE Forward 50(52.6) | NFE Backward 159(152.1)
+Iter 0895 | Time 2.7339(3.0551) | Loss 5507960.500000(5528553.899887) | NFE Forward 38(51.6) | NFE Backward 141(151.3)
+Iter 0896 | Time 3.2353(3.0677) | Loss 5531409.000000(5528753.756895) | NFE Forward 50(51.5) | NFE Backward 159(151.9)
+Iter 0897 | Time 3.0713(3.0680) | Loss 5545372.000000(5529917.033913) | NFE Forward 50(51.4) | NFE Backward 153(152.0)
+Iter 0898 | Time 3.1265(3.0721) | Loss 5594121.500000(5534411.346539) | NFE Forward 44(50.9) | NFE Backward 159(152.5)
+Iter 0899 | Time 3.1144(3.0750) | Loss 5557003.000000(5535992.762281) | NFE Forward 50(50.8) | NFE Backward 159(152.9)
+Iter 0900 | Time 3.3548(3.0946) | Loss 5478463.500000(5531965.713921) | NFE Forward 56(51.2) | NFE Backward 171(154.2)
+[TEST] Iter 0900 | Test Loss 5515697.000000 | NFE 44
+Skipping vis as data dimension is >2
+Iter 0901 | Time 2.8013(3.0741) | Loss 5539668.000000(5532504.873947) | NFE Forward 44(50.7) | NFE Backward 141(153.3)
+Iter 0902 | Time 2.9447(3.0650) | Loss 5548095.500000(5533596.217771) | NFE Forward 56(51.0) | NFE Backward 141(152.4)
+Iter 0903 | Time 2.7974(3.0463) | Loss 5531002.000000(5533414.622527) | NFE Forward 44(50.5) | NFE Backward 141(151.6)
+Iter 0904 | Time 3.0953(3.0497) | Loss 5440366.000000(5526901.218950) | NFE Forward 56(50.9) | NFE Backward 147(151.3)
+Iter 0905 | Time 2.7639(3.0297) | Loss 5499617.000000(5524991.323623) | NFE Forward 50(50.9) | NFE Backward 135(150.1)
+Iter 0906 | Time 2.9601(3.0248) | Loss 5488209.500000(5522416.595970) | NFE Forward 50(50.8) | NFE Backward 147(149.9)
+Iter 0907 | Time 3.2398(3.0399) | Loss 5517805.000000(5522093.784252) | NFE Forward 56(51.2) | NFE Backward 159(150.6)
+Iter 0908 | Time 3.0421(3.0400) | Loss 5515012.500000(5521598.094354) | NFE Forward 56(51.5) | NFE Backward 153(150.7)
+Iter 0909 | Time 2.9431(3.0333) | Loss 5489789.000000(5519371.457749) | NFE Forward 56(51.8) | NFE Backward 141(150.0)
+Iter 0910 | Time 3.1082(3.0385) | Loss 5528390.000000(5520002.755707) | NFE Forward 62(52.5) | NFE Backward 153(150.3)
+Iter 0911 | Time 3.3955(3.0635) | Loss 5533375.000000(5520938.812807) | NFE Forward 56(52.8) | NFE Backward 171(151.7)
+Iter 0912 | Time 2.6946(3.0377) | Loss 5517683.000000(5520710.905911) | NFE Forward 56(53.0) | NFE Backward 123(149.7)
+Iter 0913 | Time 3.1637(3.0465) | Loss 5497050.500000(5519054.677497) | NFE Forward 50(52.8) | NFE Backward 165(150.8)
+Iter 0914 | Time 3.1233(3.0519) | Loss 5477451.000000(5516142.420072) | NFE Forward 56(53.0) | NFE Backward 153(150.9)
+Iter 0915 | Time 2.9205(3.0427) | Loss 5546590.500000(5518273.785667) | NFE Forward 50(52.8) | NFE Backward 141(150.2)
+Iter 0916 | Time 3.0826(3.0455) | Loss 5505743.000000(5517396.630671) | NFE Forward 50(52.6) | NFE Backward 153(150.4)
+Iter 0917 | Time 2.9550(3.0391) | Loss 5563613.500000(5520631.811524) | NFE Forward 50(52.4) | NFE Backward 141(149.8)
+Iter 0918 | Time 3.2133(3.0513) | Loss 5491261.500000(5518575.889717) | NFE Forward 44(51.8) | NFE Backward 165(150.8)
+Iter 0919 | Time 3.2856(3.0677) | Loss 5490693.000000(5516624.087437) | NFE Forward 62(52.5) | NFE Backward 165(151.8)
+Iter 0920 | Time 3.1324(3.0722) | Loss 5493294.500000(5514991.016316) | NFE Forward 56(52.8) | NFE Backward 159(152.3)
+Iter 0921 | Time 3.0010(3.0673) | Loss 5534671.000000(5516368.615174) | NFE Forward 56(53.0) | NFE Backward 147(152.0)
+Iter 0922 | Time 2.9336(3.0579) | Loss 5478101.500000(5513689.917112) | NFE Forward 44(52.4) | NFE Backward 147(151.6)
+Iter 0923 | Time 2.9622(3.0512) | Loss 5486976.000000(5511819.942914) | NFE Forward 50(52.2) | NFE Backward 147(151.3)
+Iter 0924 | Time 3.2338(3.0640) | Loss 5522942.000000(5512598.486910) | NFE Forward 56(52.5) | NFE Backward 159(151.8)
+Iter 0925 | Time 3.0235(3.0612) | Loss 5561627.000000(5516030.482826) | NFE Forward 56(52.7) | NFE Backward 141(151.1)
+Iter 0926 | Time 3.2877(3.0770) | Loss 5471462.000000(5512910.689029) | NFE Forward 50(52.5) | NFE Backward 165(152.0)
+Iter 0927 | Time 3.1913(3.0850) | Loss 5517131.000000(5513206.110797) | NFE Forward 62(53.2) | NFE Backward 153(152.1)
+Iter 0928 | Time 2.9872(3.0782) | Loss 5449676.000000(5508759.003041) | NFE Forward 56(53.4) | NFE Backward 141(151.3)
+Iter 0929 | Time 2.9670(3.0704) | Loss 5551548.000000(5511754.232828) | NFE Forward 44(52.7) | NFE Backward 147(151.0)
+Iter 0930 | Time 3.3675(3.0912) | Loss 5533813.000000(5513298.346530) | NFE Forward 50(52.5) | NFE Backward 171(152.4)
+Iter 0931 | Time 3.0506(3.0883) | Loss 5489763.500000(5511650.907273) | NFE Forward 50(52.4) | NFE Backward 153(152.5)
+Iter 0932 | Time 3.3280(3.1051) | Loss 5538906.000000(5513558.763764) | NFE Forward 62(53.0) | NFE Backward 165(153.3)
+Iter 0933 | Time 3.1762(3.1101) | Loss 5498283.500000(5512489.495300) | NFE Forward 56(53.2) | NFE Backward 159(153.7)
+Iter 0934 | Time 3.0904(3.1087) | Loss 5551587.000000(5515226.320629) | NFE Forward 38(52.2) | NFE Backward 159(154.1)
+Iter 0935 | Time 3.2152(3.1162) | Loss 5557499.000000(5518185.408185) | NFE Forward 56(52.4) | NFE Backward 153(154.0)
+Iter 0936 | Time 3.0255(3.1098) | Loss 5556216.000000(5520847.549612) | NFE Forward 56(52.7) | NFE Backward 147(153.5)
+Iter 0937 | Time 3.2642(3.1206) | Loss 5557466.000000(5523410.841139) | NFE Forward 56(52.9) | NFE Backward 159(153.9)
+Iter 0938 | Time 3.3847(3.1391) | Loss 5484421.500000(5520681.587260) | NFE Forward 50(52.7) | NFE Backward 165(154.7)
+Iter 0939 | Time 3.1235(3.1380) | Loss 5454030.000000(5516015.976151) | NFE Forward 56(53.0) | NFE Backward 141(153.7)
+Iter 0940 | Time 2.9642(3.1259) | Loss 5470221.000000(5512810.327821) | NFE Forward 62(53.6) | NFE Backward 135(152.4)
+Iter 0941 | Time 3.2284(3.1330) | Loss 5509297.000000(5512564.394873) | NFE Forward 56(53.8) | NFE Backward 159(152.9)
+Iter 0942 | Time 3.3506(3.1483) | Loss 5506607.000000(5512147.377232) | NFE Forward 56(53.9) | NFE Backward 165(153.7)
+Iter 0943 | Time 3.1450(3.1480) | Loss 5504634.000000(5511621.440826) | NFE Forward 56(54.1) | NFE Backward 153(153.7)
+Iter 0944 | Time 3.3333(3.1610) | Loss 5549134.000000(5514247.319968) | NFE Forward 62(54.6) | NFE Backward 159(154.1)
+Iter 0945 | Time 3.0771(3.1551) | Loss 5562835.000000(5517648.457570) | NFE Forward 56(54.7) | NFE Backward 153(154.0)
+Iter 0946 | Time 2.7877(3.1294) | Loss 5463609.000000(5513865.695540) | NFE Forward 50(54.4) | NFE Backward 135(152.7)
+Iter 0947 | Time 3.1452(3.1305) | Loss 5505138.500000(5513254.791853) | NFE Forward 44(53.7) | NFE Backward 153(152.7)
+Iter 0948 | Time 3.1488(3.1318) | Loss 5510154.000000(5513037.736423) | NFE Forward 50(53.4) | NFE Backward 153(152.7)
+Iter 0949 | Time 3.2645(3.1411) | Loss 5494014.000000(5511706.074873) | NFE Forward 56(53.6) | NFE Backward 159(153.1)
+Iter 0950 | Time 3.2171(3.1464) | Loss 5488280.000000(5510066.249632) | NFE Forward 56(53.8) | NFE Backward 153(153.1)
+Iter 0951 | Time 3.0274(3.1381) | Loss 5558772.000000(5513475.652158) | NFE Forward 56(53.9) | NFE Backward 147(152.7)
+Iter 0952 | Time 2.9460(3.1246) | Loss 5584804.000000(5518468.636507) | NFE Forward 56(54.1) | NFE Backward 141(151.9)
+Iter 0953 | Time 3.2198(3.1313) | Loss 5440587.000000(5513016.921951) | NFE Forward 56(54.2) | NFE Backward 153(152.0)
+Iter 0954 | Time 3.1205(3.1305) | Loss 5529425.000000(5514165.487415) | NFE Forward 50(53.9) | NFE Backward 159(152.5)
+Iter 0955 | Time 2.9204(3.1158) | Loss 5580917.000000(5518838.093296) | NFE Forward 50(53.6) | NFE Backward 147(152.1)
+Iter 0956 | Time 2.7801(3.0923) | Loss 5501201.000000(5517603.496765) | NFE Forward 56(53.8) | NFE Backward 129(150.5)
+Iter 0957 | Time 3.0866(3.0919) | Loss 5569203.500000(5521215.496992) | NFE Forward 68(54.8) | NFE Backward 141(149.8)
+Iter 0958 | Time 2.9422(3.0814) | Loss 5547534.000000(5523057.792202) | NFE Forward 56(54.9) | NFE Backward 141(149.2)
+Iter 0959 | Time 3.2226(3.0913) | Loss 5477750.000000(5519886.246748) | NFE Forward 68(55.8) | NFE Backward 153(149.4)
+Iter 0960 | Time 3.1993(3.0989) | Loss 5516375.500000(5519640.494476) | NFE Forward 56(55.8) | NFE Backward 159(150.1)
+Iter 0961 | Time 3.0726(3.0970) | Loss 5501687.500000(5518383.784862) | NFE Forward 56(55.8) | NFE Backward 153(150.3)
+Iter 0962 | Time 2.9921(3.0897) | Loss 5531898.000000(5519329.779922) | NFE Forward 50(55.4) | NFE Backward 147(150.1)
+Iter 0963 | Time 3.0903(3.0897) | Loss 5492459.000000(5517448.825327) | NFE Forward 56(55.5) | NFE Backward 153(150.3)
+Iter 0964 | Time 3.4074(3.1120) | Loss 5543547.000000(5519275.697555) | NFE Forward 50(55.1) | NFE Backward 171(151.7)
+Iter 0965 | Time 3.2053(3.1185) | Loss 5534324.000000(5520329.078726) | NFE Forward 50(54.7) | NFE Backward 159(152.2)
+Iter 0966 | Time 3.0415(3.1131) | Loss 5461374.500000(5516202.258215) | NFE Forward 50(54.4) | NFE Backward 147(151.9)
+Iter 0967 | Time 3.2797(3.1248) | Loss 5527834.000000(5517016.480140) | NFE Forward 50(54.1) | NFE Backward 165(152.8)
+Iter 0968 | Time 3.0433(3.1191) | Loss 5497315.500000(5515637.411530) | NFE Forward 44(53.4) | NFE Backward 153(152.8)
+Iter 0969 | Time 3.2527(3.1284) | Loss 5513344.000000(5515476.872723) | NFE Forward 56(53.6) | NFE Backward 171(154.1)
+Iter 0970 | Time 3.0751(3.1247) | Loss 5544229.500000(5517489.556632) | NFE Forward 50(53.3) | NFE Backward 153(154.0)
+Iter 0971 | Time 3.0267(3.1178) | Loss 5490381.500000(5515591.992668) | NFE Forward 56(53.5) | NFE Backward 147(153.5)
+Iter 0972 | Time 3.1050(3.1169) | Loss 5518594.000000(5515802.133181) | NFE Forward 56(53.7) | NFE Backward 147(153.1)
+Iter 0973 | Time 3.0988(3.1157) | Loss 5470934.000000(5512661.363859) | NFE Forward 56(53.8) | NFE Backward 147(152.6)
+Iter 0974 | Time 3.4846(3.1415) | Loss 5514035.000000(5512757.518389) | NFE Forward 62(54.4) | NFE Backward 177(154.3)
+Iter 0975 | Time 3.1476(3.1419) | Loss 5557485.000000(5515888.442101) | NFE Forward 68(55.4) | NFE Backward 153(154.2)
+Iter 0976 | Time 3.2926(3.1525) | Loss 5548906.000000(5518199.671154) | NFE Forward 80(57.1) | NFE Backward 153(154.2)
+Iter 0977 | Time 3.4694(3.1747) | Loss 5472836.000000(5515024.214173) | NFE Forward 68(57.8) | NFE Backward 171(155.3)
+Iter 0978 | Time 2.9942(3.1620) | Loss 5513434.000000(5514912.899181) | NFE Forward 50(57.3) | NFE Backward 147(154.8)
+Iter 0979 | Time 3.1563(3.1616) | Loss 5448876.500000(5510290.351239) | NFE Forward 62(57.6) | NFE Backward 153(154.6)
+Iter 0980 | Time 3.3529(3.1750) | Loss 5440294.000000(5505390.606652) | NFE Forward 68(58.4) | NFE Backward 165(155.4)
+Iter 0981 | Time 3.1969(3.1765) | Loss 5497500.000000(5504838.264186) | NFE Forward 62(58.6) | NFE Backward 159(155.6)
+Iter 0982 | Time 3.4862(3.1982) | Loss 5550820.000000(5508056.985693) | NFE Forward 62(58.8) | NFE Backward 177(157.1)
+Iter 0983 | Time 3.2367(3.2009) | Loss 5482863.000000(5506293.406695) | NFE Forward 68(59.5) | NFE Backward 159(157.2)
+Iter 0984 | Time 3.0752(3.1921) | Loss 5494416.000000(5505461.988226) | NFE Forward 56(59.2) | NFE Backward 153(156.9)
+Iter 0985 | Time 3.2796(3.1982) | Loss 5471177.000000(5503062.039050) | NFE Forward 56(59.0) | NFE Backward 165(157.5)
+Iter 0986 | Time 3.2690(3.2032) | Loss 5443541.500000(5498895.601317) | NFE Forward 56(58.8) | NFE Backward 159(157.6)
+Iter 0987 | Time 3.5075(3.2245) | Loss 5482760.500000(5497766.144225) | NFE Forward 62(59.0) | NFE Backward 171(158.6)
+Iter 0988 | Time 3.2308(3.2249) | Loss 5478883.500000(5496444.359129) | NFE Forward 50(58.4) | NFE Backward 159(158.6)
+Iter 0989 | Time 3.3192(3.2315) | Loss 5528185.000000(5498666.203990) | NFE Forward 50(57.8) | NFE Backward 165(159.0)
+Iter 0990 | Time 3.1832(3.2281) | Loss 5532833.000000(5501057.879711) | NFE Forward 62(58.1) | NFE Backward 153(158.6)
+Iter 0991 | Time 3.4530(3.2439) | Loss 5426195.500000(5495817.513131) | NFE Forward 62(58.4) | NFE Backward 165(159.1)
+Iter 0992 | Time 3.3473(3.2511) | Loss 5491526.500000(5495517.142212) | NFE Forward 50(57.8) | NFE Backward 165(159.5)
+Iter 0993 | Time 3.4339(3.2639) | Loss 5527724.000000(5497771.622257) | NFE Forward 62(58.1) | NFE Backward 171(160.3)
+Iter 0994 | Time 3.3114(3.2672) | Loss 5506134.000000(5498356.988699) | NFE Forward 68(58.8) | NFE Backward 159(160.2)
+Iter 0995 | Time 3.4739(3.2817) | Loss 5455380.000000(5495348.599490) | NFE Forward 62(59.0) | NFE Backward 171(160.9)
+Iter 0996 | Time 3.1947(3.2756) | Loss 5500196.000000(5495687.917526) | NFE Forward 56(58.8) | NFE Backward 159(160.8)
+Iter 0997 | Time 3.5346(3.2938) | Loss 5496967.000000(5495777.453299) | NFE Forward 62(59.0) | NFE Backward 171(161.5)
+Iter 0998 | Time 3.3264(3.2960) | Loss 5485244.000000(5495040.111568) | NFE Forward 74(60.1) | NFE Backward 153(160.9)
+Iter 0999 | Time 3.4876(3.3094) | Loss 5463466.000000(5492829.923758) | NFE Forward 68(60.6) | NFE Backward 171(161.6)
+Iter 1000 | Time 3.1357(3.2973) | Loss 5517806.000000(5494578.249095) | NFE Forward 50(59.9) | NFE Backward 159(161.4)
+[TEST] Iter 1000 | Test Loss 5511029.000000 | NFE 68
+Skipping vis as data dimension is >2
+Iter 1001 | Time 3.4174(3.3057) | Loss 5477739.500000(5493399.536658) | NFE Forward 56(59.6) | NFE Backward 171(162.1)
+Iter 1002 | Time 3.4542(3.3161) | Loss 5490157.500000(5493172.594092) | NFE Forward 62(59.8) | NFE Backward 171(162.7)
+Iter 1003 | Time 3.6406(3.3388) | Loss 5531045.000000(5495823.662506) | NFE Forward 74(60.8) | NFE Backward 177(163.7)
+Iter 1004 | Time 3.2789(3.3346) | Loss 5474354.000000(5494320.786130) | NFE Forward 62(60.9) | NFE Backward 159(163.4)
+Iter 1005 | Time 3.1931(3.3247) | Loss 5468094.500000(5492484.946101) | NFE Forward 62(60.9) | NFE Backward 153(162.7)
+Iter 1006 | Time 3.3309(3.3251) | Loss 5431878.500000(5488242.494874) | NFE Forward 68(61.4) | NFE Backward 165(162.8)
+Iter 1007 | Time 3.4639(3.3348) | Loss 5493424.500000(5488605.235233) | NFE Forward 44(60.2) | NFE Backward 177(163.8)
+Iter 1008 | Time 3.2030(3.3256) | Loss 5502507.000000(5489578.358767) | NFE Forward 68(60.8) | NFE Backward 153(163.1)
+Iter 1009 | Time 3.7232(3.3534) | Loss 5502193.500000(5490461.418653) | NFE Forward 50(60.0) | NFE Backward 183(164.5)
+Iter 1010 | Time 3.2826(3.3485) | Loss 5532889.000000(5493431.349347) | NFE Forward 68(60.6) | NFE Backward 159(164.1)
+Iter 1011 | Time 3.4437(3.3552) | Loss 5536288.000000(5496431.314893) | NFE Forward 56(60.2) | NFE Backward 171(164.6)
+Iter 1012 | Time 3.4846(3.3642) | Loss 5511411.000000(5497479.892851) | NFE Forward 68(60.8) | NFE Backward 171(165.0)
+Iter 1013 | Time 3.7615(3.3920) | Loss 5467628.000000(5495390.260351) | NFE Forward 74(61.7) | NFE Backward 183(166.3)
+Iter 1014 | Time 3.6644(3.4111) | Loss 5484925.000000(5494657.692126) | NFE Forward 74(62.6) | NFE Backward 183(167.4)
+Iter 1015 | Time 3.5247(3.4190) | Loss 5443795.000000(5491097.303678) | NFE Forward 68(63.0) | NFE Backward 171(167.7)
+Iter 1016 | Time 3.7979(3.4456) | Loss 5497221.500000(5491525.997420) | NFE Forward 68(63.3) | NFE Backward 183(168.8)
+Iter 1017 | Time 3.2441(3.4315) | Loss 5481379.000000(5490815.707601) | NFE Forward 56(62.8) | NFE Backward 159(168.1)
+Iter 1018 | Time 3.3305(3.4244) | Loss 5413823.000000(5485426.218069) | NFE Forward 62(62.7) | NFE Backward 165(167.9)
+Iter 1019 | Time 3.4953(3.4293) | Loss 5437855.000000(5482096.232804) | NFE Forward 56(62.3) | NFE Backward 177(168.5)
+Iter 1020 | Time 3.6459(3.4445) | Loss 5455417.500000(5480228.721508) | NFE Forward 56(61.8) | NFE Backward 177(169.1)
+Iter 1021 | Time 3.3248(3.4361) | Loss 5450559.000000(5478151.841002) | NFE Forward 50(61.0) | NFE Backward 165(168.8)
+Iter 1022 | Time 3.0622(3.4100) | Loss 5493443.000000(5479222.222132) | NFE Forward 68(61.5) | NFE Backward 141(166.9)
+Iter 1023 | Time 3.2809(3.4009) | Loss 5498804.000000(5480592.946583) | NFE Forward 50(60.7) | NFE Backward 159(166.3)
+Iter 1024 | Time 3.1509(3.3834) | Loss 5452113.500000(5478599.385322) | NFE Forward 56(60.4) | NFE Backward 147(165.0)
+Iter 1025 | Time 3.5818(3.3973) | Loss 5524099.500000(5481784.393349) | NFE Forward 62(60.5) | NFE Backward 183(166.2)
+Iter 1026 | Time 3.5387(3.4072) | Loss 5521977.000000(5484597.875815) | NFE Forward 50(59.7) | NFE Backward 177(167.0)
+Iter 1027 | Time 3.3380(3.4024) | Loss 5462660.000000(5483062.224508) | NFE Forward 50(59.1) | NFE Backward 171(167.3)
+Iter 1028 | Time 3.1561(3.3851) | Loss 5500670.000000(5484294.768792) | NFE Forward 56(58.8) | NFE Backward 153(166.3)
+Iter 1029 | Time 3.2896(3.3784) | Loss 5490565.500000(5484733.719977) | NFE Forward 56(58.6) | NFE Backward 165(166.2)
+Iter 1030 | Time 3.3371(3.3755) | Loss 5480049.500000(5484405.824578) | NFE Forward 50(58.0) | NFE Backward 171(166.5)
+Iter 1031 | Time 3.3146(3.3713) | Loss 5421298.500000(5479988.311858) | NFE Forward 50(57.5) | NFE Backward 159(166.0)
+Iter 1032 | Time 3.1329(3.3546) | Loss 5471499.500000(5479394.095028) | NFE Forward 50(57.0) | NFE Backward 159(165.5)
+Iter 1033 | Time 3.1502(3.3403) | Loss 5483189.000000(5479659.738376) | NFE Forward 50(56.5) | NFE Backward 153(164.6)
+Iter 1034 | Time 3.1923(3.3299) | Loss 5458769.500000(5478197.421690) | NFE Forward 56(56.4) | NFE Backward 159(164.2)
+Iter 1035 | Time 3.2830(3.3266) | Loss 5527051.000000(5481617.172171) | NFE Forward 50(56.0) | NFE Backward 165(164.3)
+Iter 1036 | Time 3.3921(3.3312) | Loss 5529166.000000(5484945.590119) | NFE Forward 62(56.4) | NFE Backward 165(164.3)
+Iter 1037 | Time 3.1875(3.3212) | Loss 5514270.000000(5486998.298811) | NFE Forward 62(56.8) | NFE Backward 153(163.5)
+Iter 1038 | Time 3.5273(3.3356) | Loss 5457484.000000(5484932.297894) | NFE Forward 68(57.6) | NFE Backward 177(164.5)
+Iter 1039 | Time 3.3607(3.3374) | Loss 5481883.000000(5484718.847042) | NFE Forward 62(57.9) | NFE Backward 165(164.5)
+Iter 1040 | Time 3.2852(3.3337) | Loss 5442699.500000(5481777.492749) | NFE Forward 56(57.8) | NFE Backward 165(164.6)
+Iter 1041 | Time 3.4876(3.3445) | Loss 5446008.500000(5479273.663256) | NFE Forward 56(57.6) | NFE Backward 177(165.4)
+Iter 1042 | Time 3.2139(3.3353) | Loss 5465754.500000(5478327.321828) | NFE Forward 56(57.5) | NFE Backward 165(165.4)
+Iter 1043 | Time 3.3718(3.3379) | Loss 5465045.000000(5477397.559300) | NFE Forward 62(57.8) | NFE Backward 171(165.8)
+Iter 1044 | Time 3.2734(3.3334) | Loss 5476339.000000(5477323.460149) | NFE Forward 68(58.5) | NFE Backward 159(165.3)
+Iter 1045 | Time 3.7165(3.3602) | Loss 5453463.500000(5475653.262939) | NFE Forward 74(59.6) | NFE Backward 183(166.5)
+Iter 1046 | Time 3.3422(3.3589) | Loss 5455925.000000(5474272.284533) | NFE Forward 74(60.6) | NFE Backward 159(166.0)
+Iter 1047 | Time 3.1469(3.3441) | Loss 5442225.500000(5472029.009616) | NFE Forward 56(60.3) | NFE Backward 153(165.1)
+Iter 1048 | Time 3.1145(3.3280) | Loss 5509512.000000(5474652.818943) | NFE Forward 50(59.6) | NFE Backward 153(164.3)
+Iter 1049 | Time 3.2766(3.3244) | Loss 5452504.000000(5473102.401617) | NFE Forward 56(59.3) | NFE Backward 159(163.9)
+Iter 1050 | Time 3.4054(3.3301) | Loss 5456531.500000(5471942.438504) | NFE Forward 56(59.1) | NFE Backward 171(164.4)
+Iter 1051 | Time 3.4803(3.3406) | Loss 5513499.000000(5474851.397808) | NFE Forward 62(59.3) | NFE Backward 171(164.9)
+Iter 1052 | Time 3.2917(3.3372) | Loss 5485649.000000(5475607.229962) | NFE Forward 56(59.1) | NFE Backward 165(164.9)
+Iter 1053 | Time 3.6372(3.3582) | Loss 5524877.500000(5479056.148864) | NFE Forward 62(59.3) | NFE Backward 177(165.7)
+Iter 1054 | Time 3.5813(3.3738) | Loss 5515555.000000(5481611.068444) | NFE Forward 68(59.9) | NFE Backward 177(166.5)
+Iter 1055 | Time 3.2355(3.3641) | Loss 5531567.500000(5485108.018653) | NFE Forward 68(60.5) | NFE Backward 159(166.0)
+Iter 1056 | Time 3.3575(3.3637) | Loss 5490923.500000(5485515.102347) | NFE Forward 68(61.0) | NFE Backward 165(165.9)
+Iter 1057 | Time 3.2308(3.3544) | Loss 5449309.000000(5482980.675183) | NFE Forward 50(60.2) | NFE Backward 159(165.4)
+Iter 1058 | Time 3.1515(3.3402) | Loss 5438781.000000(5479886.697920) | NFE Forward 56(59.9) | NFE Backward 153(164.6)
+Iter 1059 | Time 2.9591(3.3135) | Loss 5520523.500000(5482731.274066) | NFE Forward 44(58.8) | NFE Backward 147(163.3)
+Iter 1060 | Time 3.1290(3.3006) | Loss 5468213.500000(5481715.029881) | NFE Forward 50(58.2) | NFE Backward 159(163.0)
+Iter 1061 | Time 3.1407(3.2894) | Loss 5478431.500000(5481485.182789) | NFE Forward 62(58.5) | NFE Backward 147(161.9)
+Iter 1062 | Time 3.1888(3.2823) | Loss 5453583.000000(5479532.029994) | NFE Forward 74(59.5) | NFE Backward 147(160.9)
+Iter 1063 | Time 3.3568(3.2875) | Loss 5484710.000000(5479894.487895) | NFE Forward 74(60.6) | NFE Backward 159(160.7)
+Iter 1064 | Time 3.2720(3.2865) | Loss 5491790.000000(5480727.173742) | NFE Forward 68(61.1) | NFE Backward 153(160.2)
+Iter 1065 | Time 3.2789(3.2859) | Loss 5369828.500000(5472964.266580) | NFE Forward 50(60.3) | NFE Backward 159(160.1)
+Iter 1066 | Time 3.0017(3.2660) | Loss 5520000.000000(5476256.767919) | NFE Forward 44(59.2) | NFE Backward 147(159.2)
+Iter 1067 | Time 3.2779(3.2669) | Loss 5535858.000000(5480428.854165) | NFE Forward 50(58.5) | NFE Backward 159(159.2)
+Iter 1068 | Time 3.0434(3.2512) | Loss 5492846.000000(5481298.054373) | NFE Forward 44(57.5) | NFE Backward 147(158.3)
+Iter 1069 | Time 3.2630(3.2520) | Loss 5433886.000000(5477979.210567) | NFE Forward 56(57.4) | NFE Backward 165(158.8)
+Iter 1070 | Time 3.3620(3.2597) | Loss 5478321.000000(5478003.135828) | NFE Forward 62(57.7) | NFE Backward 165(159.2)
+Iter 1071 | Time 3.4452(3.2727) | Loss 5482438.500000(5478313.611320) | NFE Forward 62(58.0) | NFE Backward 165(159.6)
+Iter 1072 | Time 3.4032(3.2819) | Loss 5504313.500000(5480133.603527) | NFE Forward 74(59.1) | NFE Backward 165(160.0)
+Iter 1073 | Time 3.3442(3.2862) | Loss 5479033.000000(5480056.561280) | NFE Forward 56(58.9) | NFE Backward 171(160.8)
+Iter 1074 | Time 3.0040(3.2665) | Loss 5406630.000000(5474916.701991) | NFE Forward 50(58.3) | NFE Backward 147(159.8)
+Iter 1075 | Time 3.4981(3.2827) | Loss 5492332.000000(5476135.772851) | NFE Forward 62(58.6) | NFE Backward 177(161.0)
+Iter 1076 | Time 3.2780(3.2824) | Loss 5452786.500000(5474501.323752) | NFE Forward 56(58.4) | NFE Backward 159(160.9)
+Iter 1077 | Time 3.1131(3.2705) | Loss 5482870.000000(5475087.131089) | NFE Forward 56(58.2) | NFE Backward 147(159.9)
+Iter 1078 | Time 3.4114(3.2804) | Loss 5421953.000000(5471367.741913) | NFE Forward 56(58.1) | NFE Backward 171(160.7)
+Iter 1079 | Time 3.6673(3.3075) | Loss 5448930.000000(5469797.099979) | NFE Forward 74(59.2) | NFE Backward 171(161.4)
+Iter 1080 | Time 3.4918(3.3204) | Loss 5513791.000000(5472876.672981) | NFE Forward 62(59.4) | NFE Backward 171(162.1)
+Iter 1081 | Time 3.3922(3.3254) | Loss 5537244.000000(5477382.385872) | NFE Forward 74(60.4) | NFE Backward 159(161.9)
+Iter 1082 | Time 3.4065(3.3311) | Loss 5520831.000000(5480423.788861) | NFE Forward 68(60.9) | NFE Backward 165(162.1)
+Iter 1083 | Time 3.7821(3.3626) | Loss 5445326.000000(5477966.943641) | NFE Forward 62(61.0) | NFE Backward 189(164.0)
+Iter 1084 | Time 3.1073(3.3448) | Loss 5519739.500000(5480891.022586) | NFE Forward 50(60.2) | NFE Backward 159(163.6)
+Iter 1085 | Time 3.6850(3.3686) | Loss 5458527.500000(5479325.576005) | NFE Forward 80(61.6) | NFE Backward 177(164.6)
+Iter 1086 | Time 3.5119(3.3786) | Loss 5534286.000000(5483172.805684) | NFE Forward 86(63.3) | NFE Backward 165(164.6)
+Iter 1087 | Time 3.4872(3.3862) | Loss 5506132.000000(5484779.949286) | NFE Forward 62(63.2) | NFE Backward 171(165.0)
+Iter 1088 | Time 3.7263(3.4100) | Loss 5472873.000000(5483946.462836) | NFE Forward 62(63.1) | NFE Backward 183(166.3)
+Iter 1089 | Time 3.5751(3.4216) | Loss 5382573.000000(5476850.320438) | NFE Forward 68(63.5) | NFE Backward 177(167.0)
+Iter 1090 | Time 3.1531(3.4028) | Loss 5414986.000000(5472519.818007) | NFE Forward 62(63.4) | NFE Backward 147(165.6)
+Iter 1091 | Time 3.6050(3.4169) | Loss 5450426.000000(5470973.250747) | NFE Forward 74(64.1) | NFE Backward 177(166.4)
+Iter 1092 | Time 3.3935(3.4153) | Loss 5491420.000000(5472404.523194) | NFE Forward 68(64.4) | NFE Backward 159(165.9)
+Iter 1093 | Time 3.6543(3.4320) | Loss 5499694.000000(5474314.786571) | NFE Forward 62(64.2) | NFE Backward 183(167.1)
+Iter 1094 | Time 3.4512(3.4334) | Loss 5488891.500000(5475335.156511) | NFE Forward 68(64.5) | NFE Backward 171(167.4)
+Iter 1095 | Time 3.4273(3.4329) | Loss 5524553.000000(5478780.405555) | NFE Forward 62(64.3) | NFE Backward 177(168.1)
