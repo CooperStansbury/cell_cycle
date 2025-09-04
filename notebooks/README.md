@@ -1,13 +1,22 @@
 # Notebooks
 
-Exploratory Jupyter notebooks and helper utilities for cell‑cycle analysis.
+Exploratory Jupyter notebooks and helper utilities for cell‑cycle analysis. Each notebook is self‑contained and can be run independently once the required data files are available.
 
-- `TrajectoryNet.ipynb` – run TrajectoryNet on single‑cell data.
-- `buid_velocity_data.ipynb` – build RNA velocity inputs.
-- `cell_cycle_genes.ipynb` – visualize cell‑cycle gene sets.
-- `clock_plots.ipynb` – display cell‑cycle position as a clock.
+- `analyze_trajectories.ipynb` – evaluate learned trajectories from models such as TrajectoryNet.
+- `buid_velocity_data.ipynb` – build RNA velocity input matrices.
+- `cell_cycle_genes.ipynb` – visualize curated cell‑cycle gene sets.
+- `compare_imputation.ipynb` – assess the effect of different imputation strategies.
+- `clock_plots.ipynb` – display cell‑cycle position as a circular clock.
 - `impute.ipynb` – impute missing expression values.
-- `magic_NG.ipynb` – apply MAGIC for gene‑expression smoothing.
-- `magic_explore.ipynb` – explore MAGIC‑imputed data.
+- `phase_alignment.ipynb` – align cells to known cell‑cycle phases.
+- `prepare_TrajectoryNet.ipynb` – preprocess data and configuration for TrajectoryNet runs.
+- `rank_study.ipynb` – explore gene ranking approaches for phase determination.
 - `trajectory_inference.ipynb` – compare trajectory‑inference methods.
-- `utils.py` – helper functions shared across notebooks.
+- `velocity_analysis.ipynb` – downstream analyses of RNA velocity results.
+
+### Archived notebooks
+The `archive/` directory stores older exploratory notebooks and utilities that are kept for reference:
+
+- `archive/magic_NG.ipynb` – apply MAGIC for gene‑expression smoothing.
+- `archive/magic_explore.ipynb` – explore MAGIC‑imputed data.
+- `archive/utils.py` – helper functions formerly shared across notebooks.
