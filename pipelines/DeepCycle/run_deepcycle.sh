@@ -1,6 +1,5 @@
 #!/bin/bash
-
-#SBATCH --job-name=deepcycle 
+#SBATCH --job-name=deep_cycle 
 #SBATCH --account=indikar1
 #SBATCH --partition=gpu,gpu_mig40,spgpu
 #SBATCH --mail-user=cstansbu@umich.edu
@@ -16,8 +15,8 @@
 DEEPCYCLE_SCRIPT="/home/cstansbu/git_repositories/DeepCycle/DeepCycle.py"
 INPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/TrajNet_input.h5ad"
 GENE_LIST="/home/cstansbu/git_repositories/DeepCycle/go_annotation/GO_cell_cycle_annotation_human.txt"
-BASE_GENE="TOP2A"
-EXPRESSION_THRESHOLD="0.0001"
+BASE_GENE="MELK"
+EXPRESSION_THRESHOLD="0.00001"
 OUTPUT_ADATA="/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/deepcycle.h5ad"
 
 # Echo parameters
@@ -26,7 +25,6 @@ echo "  Script:                 $DEEPCYCLE_SCRIPT"
 echo "  Input AnnData:          $INPUT_ADATA"
 echo "  Gene list:              $GENE_LIST"
 echo "  Base gene:              $BASE_GENE"
-echo "  Expression threshold:   $EXPRESSION_THRESHOLD"
 echo "  Output AnnData:         $OUTPUT_ADATA"
 echo ""
 
@@ -37,5 +35,4 @@ python "$DEEPCYCLE_SCRIPT" \
     --base_gene "$BASE_GENE" \
     --expression_threshold "$EXPRESSION_THRESHOLD" \
     --gpu \
-    --hotelling \
     --output_adata "$OUTPUT_ADATA"

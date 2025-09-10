@@ -1,0 +1,24 @@
+adata: "/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/inputs/adata.h5ad"
+input: &input "/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/inputs/input_15comp_6time.npz"
+output: &output "/nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/outputs"
+
+integration_args:
+  times: [10, 100]
+  
+args:
+  dataset: *input
+  embedding_name: "pca"
+  save: *output
+  niters: 1000
+  max_dim: 20
+  time_scale: 0.5
+  use_density: true
+  rtol: 1e-4, 
+  atol: 1e-5, 
+  top_k_reg: 1.5
+  batch_size: 8192
+  vecint: 1e-5
+  lr: 1e-2
+  whiten: true
+  training_noise: 0.0
+  weight_decay: 1e-5

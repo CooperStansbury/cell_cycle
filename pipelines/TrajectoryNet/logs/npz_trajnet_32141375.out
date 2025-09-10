@@ -1,0 +1,11 @@
+Job: npz_trajnet (32141375)
+Work dir: /home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet
+Out dir:  /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/npz/20250908_105405_32141375
+NPZ: /nfs/turbo/umms-indikar/shared/projects/HSC/pipeline_outputs/integrated_anndata/cell_cycle/input_pca15.npz
+Embedding: pca
+
+[Train] Mon Sep  8 10:54:05 EDT 2025
+True
+[Eval]  Tue Sep  9 06:54:12 EDT 2025
+integrating backwards
+Done Tue Sep  9 06:54:34 EDT 2025  Run ID: 20250908_105405_32141375
