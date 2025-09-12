@@ -151,7 +151,6 @@ if __name__ == "__main__":
         outpath = f"{args.save}/gene_trajectories_{t}.parquet"
         results.to_csv(outpath)
         print(f"Saved: {outpath}")
-        break
         
 
         

@@ -1,0 +1,95 @@
+/home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet/tn_utils.py:224: FutureWarning: `torch.cuda.amp.GradScaler(args...)` is deprecated. Please use `torch.amp.GradScaler('cuda', args...)` instead.
+  scaler = torch.cuda.amp.GradScaler(enabled=use_cuda)
+TrajectoryNet:   0%|          | 0/2000 [00:00<?, ?it/s]/home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet/tn_utils.py:236: FutureWarning: `torch.cuda.amp.autocast(args...)` is deprecated. Please use `torch.amp.autocast('cuda', args...)` instead.
+  with torch.cuda.amp.autocast(enabled=use_cuda):
+TrajectoryNet:   0%|          | 1/2000 [00:07<4:05:53,  7.38s/it]TrajectoryNet:   0%|          | 2/2000 [00:12<3:22:11,  6.07s/it]TrajectoryNet:   0%|          | 3/2000 [00:17<3:06:38,  5.61s/it]TrajectoryNet:   0%|          | 4/2000 [00:22<3:00:54,  5.44s/it]TrajectoryNet:   0%|          | 5/2000 [00:28<2:58:25,  5.37s/it]TrajectoryNet:   0%|          | 6/2000 [00:33<3:00:02,  5.42s/it]TrajectoryNet:   0%|          | 7/2000 [00:39<3:02:35,  5.50s/it]TrajectoryNet:   0%|          | 8/2000 [00:44<3:04:37,  5.56s/it]TrajectoryNet:   0%|          | 9/2000 [00:50<3:09:48,  5.72s/it]TrajectoryNet:   0%|          | 10/2000 [00:56<3:09:44,  5.72s/it]TrajectoryNet:   1%|          | 11/2000 [01:02<3:07:13,  5.65s/it]TrajectoryNet:   1%|          | 12/2000 [01:07<3:06:05,  5.62s/it]TrajectoryNet:   1%|          | 13/2000 [01:13<3:05:15,  5.59s/it]TrajectoryNet:   1%|          | 14/2000 [01:18<3:04:42,  5.58s/it]TrajectoryNet:   1%|          | 15/2000 [01:24<3:03:45,  5.55s/it]TrajectoryNet:   1%|          | 16/2000 [01:30<3:05:50,  5.62s/it]TrajectoryNet:   1%|          | 17/2000 [01:35<3:06:58,  5.66s/it]TrajectoryNet:   1%|          | 18/2000 [01:41<3:08:02,  5.69s/it]TrajectoryNet:   1%|          | 19/2000 [01:47<3:07:42,  5.69s/it]TrajectoryNet:   1%|          | 20/2000 [01:52<3:05:26,  5.62s/it]TrajectoryNet:   1%|          | 21/2000 [01:58<3:03:53,  5.58s/it]TrajectoryNet:   1%|          | 22/2000 [02:03<3:04:35,  5.60s/it]TrajectoryNet:   1%|          | 23/2000 [02:09<3:03:35,  5.57s/it]TrajectoryNet:   1%|          | 24/2000 [02:14<3:01:49,  5.52s/it]TrajectoryNet:   1%|▏         | 25/2000 [02:20<3:06:23,  5.66s/it]TrajectoryNet:   1%|▏         | 26/2000 [02:26<3:08:50,  5.74s/it]TrajectoryNet:   1%|▏         | 27/2000 [02:32<3:09:51,  5.77s/it]TrajectoryNet:   1%|▏         | 28/2000 [02:38<3:09:37,  5.77s/it]TrajectoryNet:   1%|▏         | 29/2000 [02:44<3:10:01,  5.78s/it]TrajectoryNet:   2%|▏         | 30/2000 [02:49<3:09:43,  5.78s/it]TrajectoryNet:   2%|▏         | 31/2000 [02:55<3:09:28,  5.77s/it]TrajectoryNet:   2%|▏         | 32/2000 [03:02<3:16:24,  5.99s/it]TrajectoryNet:   2%|▏         | 33/2000 [03:08<3:15:56,  5.98s/it]TrajectoryNet:   2%|▏         | 34/2000 [03:13<3:11:29,  5.84s/it]TrajectoryNet:   2%|▏         | 35/2000 [03:19<3:08:47,  5.76s/it]TrajectoryNet:   2%|▏         | 36/2000 [03:25<3:09:56,  5.80s/it]TrajectoryNet:   2%|▏         | 37/2000 [03:30<3:05:18,  5.66s/it]TrajectoryNet:   2%|▏         | 38/2000 [03:36<3:06:46,  5.71s/it]TrajectoryNet:   2%|▏         | 39/2000 [03:41<3:06:13,  5.70s/it]TrajectoryNet:   2%|▏         | 40/2000 [03:47<3:05:57,  5.69s/it]TrajectoryNet:   2%|▏         | 41/2000 [03:53<3:07:00,  5.73s/it]TrajectoryNet:   2%|▏         | 42/2000 [03:58<3:05:18,  5.68s/it]TrajectoryNet:   2%|▏         | 43/2000 [04:04<3:03:54,  5.64s/it]TrajectoryNet:   2%|▏         | 44/2000 [04:10<3:04:57,  5.67s/it]TrajectoryNet:   2%|▏         | 45/2000 [04:16<3:07:20,  5.75s/it]TrajectoryNet:   2%|▏         | 46/2000 [04:22<3:10:10,  5.84s/it]TrajectoryNet:   2%|▏         | 47/2000 [04:28<3:11:23,  5.88s/it]TrajectoryNet:   2%|▏         | 48/2000 [04:34<3:10:46,  5.86s/it]TrajectoryNet:   2%|▏         | 49/2000 [04:39<3:10:26,  5.86s/it]TrajectoryNet:   2%|▎         | 50/2000 [04:45<3:11:49,  5.90s/it]TrajectoryNet:   3%|▎         | 51/2000 [04:51<3:13:02,  5.94s/it]TrajectoryNet:   3%|▎         | 52/2000 [04:58<3:16:00,  6.04s/it]TrajectoryNet:   3%|▎         | 53/2000 [05:04<3:14:43,  6.00s/it]TrajectoryNet:   3%|▎         | 54/2000 [05:10<3:14:59,  6.01s/it]TrajectoryNet:   3%|▎         | 55/2000 [05:16<3:16:02,  6.05s/it]TrajectoryNet:   3%|▎         | 56/2000 [05:22<3:16:03,  6.05s/it]TrajectoryNet:   3%|▎         | 57/2000 [05:28<3:16:14,  6.06s/it]TrajectoryNet:   3%|▎         | 58/2000 [05:34<3:15:47,  6.05s/it]TrajectoryNet:   3%|▎         | 59/2000 [05:40<3:12:14,  5.94s/it]TrajectoryNet:   3%|▎         | 60/2000 [05:46<3:15:56,  6.06s/it]TrajectoryNet:   3%|▎         | 61/2000 [05:52<3:17:05,  6.10s/it]TrajectoryNet:   3%|▎         | 62/2000 [05:58<3:16:28,  6.08s/it]TrajectoryNet:   3%|▎         | 63/2000 [06:04<3:14:47,  6.03s/it]TrajectoryNet:   3%|▎         | 64/2000 [06:10<3:13:08,  5.99s/it]TrajectoryNet:   3%|▎         | 65/2000 [06:16<3:16:41,  6.10s/it]TrajectoryNet:   3%|▎         | 66/2000 [06:23<3:20:17,  6.21s/it]TrajectoryNet:   3%|▎         | 67/2000 [06:30<3:34:14,  6.65s/it]TrajectoryNet:   3%|▎         | 68/2000 [06:36<3:26:26,  6.41s/it]TrajectoryNet:   3%|▎         | 69/2000 [06:42<3:22:04,  6.28s/it]TrajectoryNet:   4%|▎         | 70/2000 [06:48<3:18:08,  6.16s/it]TrajectoryNet:   4%|▎         | 71/2000 [06:54<3:17:31,  6.14s/it]TrajectoryNet:   4%|▎         | 72/2000 [07:00<3:15:19,  6.08s/it]TrajectoryNet:   4%|▎         | 73/2000 [07:06<3:13:23,  6.02s/it]TrajectoryNet:   4%|▎         | 74/2000 [07:12<3:12:17,  5.99s/it]TrajectoryNet:   4%|▍         | 75/2000 [07:18<3:10:21,  5.93s/it]TrajectoryNet:   4%|▍         | 76/2000 [07:24<3:11:16,  5.97s/it]TrajectoryNet:   4%|▍         | 77/2000 [07:30<3:11:52,  5.99s/it]TrajectoryNet:   4%|▍         | 78/2000 [07:36<3:11:07,  5.97s/it]TrajectoryNet:   4%|▍         | 79/2000 [07:42<3:10:13,  5.94s/it]TrajectoryNet:   4%|▍         | 80/2000 [07:48<3:09:00,  5.91s/it]TrajectoryNet:   4%|▍         | 81/2000 [07:53<3:08:04,  5.88s/it]TrajectoryNet:   4%|▍         | 82/2000 [07:59<3:09:04,  5.91s/it]TrajectoryNet:   4%|▍         | 83/2000 [08:05<3:07:43,  5.88s/it]TrajectoryNet:   4%|▍         | 84/2000 [08:11<3:06:42,  5.85s/it]TrajectoryNet:   4%|▍         | 85/2000 [08:17<3:05:46,  5.82s/it]TrajectoryNet:   4%|▍         | 86/2000 [08:22<3:05:38,  5.82s/it]TrajectoryNet:   4%|▍         | 87/2000 [08:28<3:06:05,  5.84s/it]TrajectoryNet:   4%|▍         | 88/2000 [08:34<3:06:34,  5.86s/it]TrajectoryNet:   4%|▍         | 89/2000 [08:40<3:08:29,  5.92s/it]TrajectoryNet:   4%|▍         | 90/2000 [08:46<3:09:42,  5.96s/it]TrajectoryNet:   5%|▍         | 91/2000 [08:53<3:13:01,  6.07s/it]TrajectoryNet:   5%|▍         | 92/2000 [08:59<3:16:25,  6.18s/it]TrajectoryNet:   5%|▍         | 93/2000 [09:05<3:16:24,  6.18s/it]TrajectoryNet:   5%|▍         | 94/2000 [09:12<3:18:01,  6.23s/it]TrajectoryNet:   5%|▍         | 95/2000 [09:18<3:17:55,  6.23s/it]TrajectoryNet:   5%|▍         | 96/2000 [09:24<3:15:33,  6.16s/it]TrajectoryNet:   5%|▍         | 97/2000 [09:30<3:14:22,  6.13s/it]TrajectoryNet:   5%|▍         | 98/2000 [09:36<3:13:26,  6.10s/it]TrajectoryNet:   5%|▍         | 99/2000 [09:42<3:12:11,  6.07s/it]TrajectoryNet:   5%|▍         | 99/2000 [09:50<3:08:50,  5.96s/it]
+Traceback (most recent call last):
+  File "/home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet/trainTrajectoryNet.py", line 89, in <module>
+    model, history = tn_utils.trainTrajectoryNet(
+                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        device,
+        ^^^^^^^
+    ...<2 lines>...
+        logger,
+        ^^^^^^^
+    )
+    ^
+  File "/home/cstansbu/git_repositories/cell_cycle/pipelines/TrajectoryNet/tn_utils.py", line 273, in trainTrajectoryNet
+    tnet_train.train_eval(device, args, model, None, itr, best_loss, logger, full_data)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/main.py", line 330, in train_eval
+    test_loss = compute_loss(device, args, model, growth_model, logger, full_data)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/main.py", line 122, in compute_loss
+    z, delta_logp = model(x, zero, integration_times=integration_times)
+                    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/lib/layers/container.py", line 25, in forward
+    x, logpx = self.chain[i](x, logpx, integration_times=integration_times, reverse=reverse)
+               ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/lib/layers/cnf.py", line 63, in forward
+    state_t = odeint(
+        self.odefunc,
+    ...<4 lines>...
+        method=self.test_solver,
+    )
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/adjoint.py", line 129, in odeint_adjoint
+    ys = OdeintAdjointMethod.apply(*y0, func, t, flat_params, rtol, atol, method, options)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/autograd/function.py", line 575, in apply
+    return super().apply(*args, **kwargs)  # type: ignore[misc]
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/adjoint.py", line 18, in forward
+    ans = odeint(func, y0, t, rtol=rtol, atol=atol, method=method, options=options)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/odeint.py", line 76, in odeint
+    solution = solver.integrate(t)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/solvers.py", line 31, in integrate
+    y = self.advance(t[i])
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/dopri5.py", line 90, in advance
+    self.rk_state = self._adaptive_dopri5_step(self.rk_state)
+                    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/dopri5.py", line 103, in _adaptive_dopri5_step
+    y1, f1, y1_error, k = _runge_kutta_step(self.func, y0, f0, t0, dt, tableau=_DORMAND_PRINCE_SHAMPINE_TABLEAU)
+                          ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torchdiffeq/_impl/rk_common.py", line 52, in _runge_kutta_step
+    tuple(k_.append(f_) for k_, f_ in zip(k, func(ti, yi)))
+                                             ~~~~^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/lib/layers/wrappers/cnf_regularization.py", line 23, in forward
+    dstate = self.odefunc(t, (x, logp))
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/lib/layers/odefunc.py", line 306, in forward
+    divergence = self.divergence_fn(dy, y, e=self._e).view(batchsize, 1)
+                 ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/TrajectoryNet/lib/layers/odefunc.py", line 17, in divergence_bf
+    sum_diag += torch.autograd.grad(dx[:, i].sum(), y, create_graph=True)[0].contiguous()[:, i].contiguous()
+                ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/autograd/__init__.py", line 502, in grad
+    result = _engine_run_backward(
+        outputs,
+    ...<5 lines>...
+        accumulate_grad=False,
+    )
+  File "/nfs/turbo/umms-indikar/Cooper/conda_envs/scvelo/lib/python3.13/site-packages/torch/autograd/graph.py", line 824, in _engine_run_backward
+    return Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        t_outputs, *args, **kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )  # Calls into the C++ engine to run the backward pass
+    ^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 12.00 MiB. GPU 0 has a total capacity of 15.77 GiB of which 192.00 KiB is free. Including non-PyTorch memory, this process has 15.76 GiB memory in use. Of the allocated memory 12.23 GiB is allocated by PyTorch, and 3.16 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
