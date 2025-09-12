@@ -36,3 +36,6 @@ PY
 
 ## Usage
 Edit variables in `run_deepcycle.sh` to point to your data and submit with `sbatch`. A GPU‑equipped node is recommended. The script expects an input expression matrix and produces phase estimates and diagnostic plots under the `DeepCycle/` directory.
+
+Training requires a GPU with sufficient memory to fit the model. The provided commands assume an HPC environment; adjust batch sizes and learning rates in `run_deepcycle.sh` to suit your hardware.
+
