@@ -8,3 +8,6 @@ Workflow scripts for processing cell cycle data. Each subdirectory contains conf
 - `velocyto_pipeline/` – Snakemake workflow for generating spliced and unspliced matrices with Velocyto.
 
 See the README within each pipeline directory for prerequisites and execution instructions.
+
+Most workflows require access to a high‑performance computing environment or cluster scheduler. Review the README within each pipeline directory for exact software prerequisites and expected input formats before execution.
+

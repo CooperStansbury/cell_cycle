@@ -17,3 +17,6 @@ snakemake --use-conda --cores 32
 ```
 
 Alternatively, submit `slurm_submit.sh` on a cluster scheduler. The workflow expects aligned BAM files and a reference genome; outputs are written under `results/` with separate matrices for spliced and unspliced reads.
+
+Outputs include loom files and expression matrices that can be loaded into downstream notebooks for velocity analysis. Custom pre-processing steps can be added to the `Snakefile` to accommodate additional alignment or filtering requirements.
+

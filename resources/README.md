@@ -4,3 +4,6 @@ Reference files used across analyses. These small curated datasets are kept unde
 
 - `GO_Biological_Process_2023.txt` – Gene Ontology biological process terms as downloaded in 2023; used for enrichment analysis.
 - `liu_2017_genes.csv` – cell‑cycle marker genes reported by Liu et al. (2017) used for benchmarking.
+
+Larger reference genomes and raw sequencing data are stored externally due to size constraints. Paths to those resources should be configured in the relevant pipeline configuration files. When adding new curated lists or small annotations, document their source and update this README accordingly.
+

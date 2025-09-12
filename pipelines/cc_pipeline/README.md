@@ -49,3 +49,6 @@ ref_genome_dir: /path/to/refdata-gex-GRCh38-2020-A
 
 The pipeline creates an output directory structure mirroring the Epi2me workflow, including filtered matrices and QC reports. Adjust `config.yaml` to point to input FASTQ files and the desired reference genome location before running.
 
+
+The `config.yaml` file controls input FASTQ locations, reference genome paths, and Nextflow resource settings. Results are written to a timestamped directory under `output/` by default; remove the `--overwrite` flag to keep previous runs.
+
